@@ -1,0 +1,562 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>AreaMap Agent Network Graph Architecture</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <script src="https://unpkg.com/vis-network/standalone/umd/vis-network.min.js"></script>
+  <style>
+    :root {
+      --bg: #090D16;
+      --card-bg: rgba(15, 23, 42, 0.75);
+      --border: rgba(148, 163, 184, 0.15);
+      --text: #F1F5F9;
+      --text-muted: #94A3B8;
+      --accent-blue: #38BDF8;
+      --accent-purple: #C084FC;
+      --accent-emerald: #34D399;
+      --accent-amber: #FBBF24;
+      --accent-rose: #FB7185;
+    }
+
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: 'Outfit', sans-serif;
+      background-color: var(--bg);
+      color: var(--text);
+      overflow: hidden;
+      height: 100vh;
+      display: flex;
+      flex-direction: column;
+    }
+
+    header {
+      padding: 16px 24px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      background: rgba(15, 23, 42, 0.85);
+      backdrop-filter: blur(12px);
+      border-bottom: 1px solid var(--border);
+      z-index: 10;
+    }
+
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+
+    .brand h1 {
+      font-size: 20px;
+      font-weight: 700;
+      letter-spacing: -0.5px;
+      background: linear-gradient(135deg, #38BDF8, #818CF8);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+    }
+
+    .badge {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 11px;
+      background: rgba(56, 189, 248, 0.15);
+      color: var(--accent-blue);
+      padding: 3px 8px;
+      border-radius: 999px;
+      border: 1px solid rgba(56, 189, 248, 0.3);
+    }
+
+    .controls {
+      display: flex;
+      gap: 10px;
+      align-items: center;
+    }
+
+    .tier-btn {
+      background: rgba(30, 41, 59, 0.8);
+      border: 1px solid var(--border);
+      color: var(--text-muted);
+      padding: 6px 14px;
+      border-radius: 8px;
+      font-size: 13px;
+      font-weight: 500;
+      cursor: pointer;
+      transition: all 0.2s ease;
+    }
+
+    .tier-btn.active, .tier-btn:hover {
+      background: rgba(56, 189, 248, 0.2);
+      border-color: var(--accent-blue);
+      color: #FFF;
+      box-shadow: 0 0 15px rgba(56, 189, 248, 0.25);
+    }
+
+    .main-container {
+      display: flex;
+      flex: 1;
+      position: relative;
+      overflow: hidden;
+    }
+
+    #network {
+      flex: 1;
+      height: 100%;
+      background: radial-gradient(circle at 50% 50%, #111827 0%, #090D16 100%);
+    }
+
+    .sidebar {
+      width: 380px;
+      background: var(--card-bg);
+      backdrop-filter: blur(16px);
+      border-left: 1px solid var(--border);
+      padding: 24px;
+      overflow-y: auto;
+      display: flex;
+      flex-direction: column;
+      gap: 18px;
+      transition: transform 0.3s ease;
+      z-index: 5;
+    }
+
+    .panel-title {
+      font-size: 12px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 1px;
+      color: var(--text-muted);
+    }
+
+    .node-header {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+
+    .node-icon {
+      width: 44px;
+      height: 44px;
+      border-radius: 12px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 20px;
+    }
+
+    .node-title-group h2 {
+      font-size: 18px;
+      font-weight: 700;
+      color: #FFF;
+    }
+
+    .node-paradigm {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 12px;
+      color: var(--accent-blue);
+    }
+
+    .desc-box {
+      background: rgba(15, 23, 42, 0.5);
+      border: 1px solid var(--border);
+      padding: 14px;
+      border-radius: 10px;
+      font-size: 13.5px;
+      line-height: 1.5;
+      color: #CBD5E1;
+    }
+
+    .meta-list {
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+
+    .meta-item {
+      background: rgba(30, 41, 59, 0.4);
+      padding: 10px 12px;
+      border-radius: 8px;
+      border-left: 3px solid var(--accent-blue);
+    }
+
+    .meta-label {
+      font-size: 11px;
+      color: var(--text-muted);
+      text-transform: uppercase;
+    }
+
+    .meta-val {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 12.5px;
+      color: #E2E8F0;
+      margin-top: 2px;
+    }
+
+    .legend {
+      position: absolute;
+      bottom: 20px;
+      left: 20px;
+      background: rgba(15, 23, 42, 0.85);
+      backdrop-filter: blur(12px);
+      border: 1px solid var(--border);
+      padding: 12px 18px;
+      border-radius: 12px;
+      display: flex;
+      gap: 16px;
+      z-index: 5;
+    }
+
+    .legend-item {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 12px;
+      color: var(--text-muted);
+    }
+
+    .legend-dot {
+      width: 10px;
+      height: 10px;
+      border-radius: 50%;
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <div class="brand">
+      <h1>AreaMap Agent Network Graph</h1>
+      <span class="badge">LangGraph 0.2 Architecture</span>
+    </div>
+    <div class="controls">
+      <span style="font-size: 13px; color: var(--text-muted);">Active Tier:</span>
+      <button class="tier-btn active" onclick="filterTier('all')">Whole Property (All)</button>
+      <button class="tier-btn" onclick="filterTier('lidar')">LiDAR Route</button>
+      <button class="tier-btn" onclick="filterTier('video')">Video Route</button>
+      <button class="tier-btn" onclick="filterTier('photo')">Photo Route</button>
+    </div>
+  </header>
+
+  <div class="main-container">
+    <div id="network"></div>
+
+    <div class="sidebar" id="sidebar">
+      <span class="panel-title">Node Inspector</span>
+      <div class="node-header">
+        <div class="node-icon" id="panel-icon" style="background: rgba(56, 189, 248, 0.2); border: 1px solid var(--accent-blue);">🛰️</div>
+        <div class="node-title-group">
+          <h2 id="panel-name">M1: Ingest & Router</h2>
+          <div class="node-paradigm" id="panel-paradigm">Deterministic Python</div>
+        </div>
+      </div>
+
+      <div class="desc-box" id="panel-desc">
+        Inspects directory contents, reads EXIF focal length and camera intrinsics, validates input quality, and branches to the appropriate tier.
+      </div>
+
+      <div class="meta-list">
+        <div class="meta-item" style="border-color: var(--accent-blue);">
+          <div class="meta-label">Source Implementation</div>
+          <div class="meta-val" id="panel-src">src/areamap/nodes/ingest.py</div>
+        </div>
+        <div class="meta-item" style="border-color: var(--accent-purple);">
+          <div class="meta-label">Consumes State</div>
+          <div class="meta-val" id="panel-inputs">capture_path, raw sensor directory</div>
+        </div>
+        <div class="meta-item" style="border-color: var(--accent-emerald);">
+          <div class="meta-label">Mutates State</div>
+          <div class="meta-val" id="panel-outputs">tier, device_meta, rooms, warnings</div>
+        </div>
+        <div class="meta-item" style="border-color: var(--accent-amber);">
+          <div class="meta-label">Target CPU Latency</div>
+          <div class="meta-val" id="panel-timing">&lt; 5.0 seconds</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="legend">
+      <div class="legend-item"><div class="legend-dot" style="background: #38BDF8;"></div> Ingest / Route</div>
+      <div class="legend-item"><div class="legend-dot" style="background: #818CF8;"></div> Deterministic Geometry</div>
+      <div class="legend-item"><div class="legend-dot" style="background: #C084FC;"></div> VLM / Semantic AI</div>
+      <div class="legend-item"><div class="legend-dot" style="background: #FBBF24;"></div> Rule Engine</div>
+      <div class="legend-item"><div class="legend-dot" style="background: #FB7185;"></div> QA Critic</div>
+      <div class="legend-item"><div class="legend-dot" style="background: #34D399;"></div> Export & SVG</div>
+    </div>
+  </div>
+
+  <script>
+    const nodeDetails = {
+      1: {
+        name: "M1: Ingest & Router",
+        paradigm: "Deterministic Python",
+        icon: "🛰️",
+        color: "#38BDF8",
+        desc: "Examines directory layout. Discovers whether capture contains LiDAR depth+poses, walkthrough video, or photo folders. Parses EXIF and ARKit intrinsics.",
+        src: "src/areamap/nodes/ingest.py",
+        inputs: "capture_path, raw sensor files",
+        outputs: "tier (photo/video/lidar), device_meta, rooms[]",
+        timing: "< 5.0 s (measured 1.25s)"
+      },
+      2: {
+        name: "M3: LiDAR Tier Adapter",
+        paradigm: "Deterministic Point Cloud Processing",
+        icon: "📡",
+        color: "#38BDF8",
+        desc: "Ingests confidence maps, depth images, and 6-DoF odometry. Performs confidence thresholding, outlier rejection, and voxel downsampling.",
+        src: "src/areamap/tiers/lidar.py",
+        inputs: "camera_matrix.csv, odometry.csv, depth/",
+        outputs: "point_clouds{room_id: PointCloud}",
+        timing: "< 180 s on CPU (scan length 2 min)"
+      },
+      3: {
+        name: "M7: Video Tier Adapter",
+        paradigm: "Frame Selection & Metric SfM",
+        icon: "📹",
+        color: "#38BDF8",
+        desc: "Selects sharp, unblurred keyframes, runs feature matching, and recovers metric scale using door height priors (2.05m standard).",
+        src: "src/areamap/tiers/video.py",
+        inputs: "walkthrough.mp4 / rgb.mp4",
+        outputs: "point_clouds{room_id: PointCloud}",
+        timing: "< 600 s on CPU"
+      },
+      4: {
+        name: "M8: Photo Tier Adapter",
+        paradigm: "Monocular Depth + Vanishing Priors",
+        icon: "📷",
+        color: "#38BDF8",
+        desc: "Processes 2 to 8 photos per room, runs metric depth estimation, anchors scale via doorway geometry and EXIF focal length.",
+        src: "src/areamap/tiers/photo.py",
+        inputs: "Per-room photo folders (*.jpg)",
+        outputs: "point_clouds{room_id: PointCloud}",
+        timing: "< 120 s on CPU"
+      },
+      5: {
+        name: "M4: Room Geometry",
+        paradigm: "RANSAC Plane Fitting (Open3D)",
+        icon: "📐",
+        color: "#818CF8",
+        desc: "Classifies floor, ceiling, and walls. Extracts ceiling height (error <= 1.5 cm), wall lengths, floor polygon vertices, and area.",
+        src: "src/areamap/nodes/geometry.py",
+        inputs: "point_clouds{}",
+        outputs: "room_geometry{room_id: RoomGeometry}",
+        timing: "< 25.0 s"
+      },
+      6: {
+        name: "M5: Openings Detection",
+        paradigm: "Planar Cutout Analysis",
+        icon: "🚪",
+        color: "#818CF8",
+        desc: "Detects door and window cutouts. Measures width (Gate G1: <= 2 cm on >= 85%), height, and sill height with phantom suppression.",
+        src: "src/areamap/nodes/openings.py",
+        inputs: "room_geometry.walls",
+        outputs: "openings{room_id: Opening[]}",
+        timing: "< 10.0 s"
+      },
+      7: {
+        name: "M6: Multi-Room Stitcher",
+        paradigm: "Pose Graph Optimization (Drift Ablation)",
+        icon: "🧩",
+        color: "#818CF8",
+        desc: "Aligns rooms into global coordinates via door portal constraints and loop closure. Eliminates overlaps. Supports drift ON/OFF ablation.",
+        src: "src/areamap/nodes/stitch.py",
+        inputs: "room_geometry{}, openings{}",
+        outputs: "stitched_plan (Adjacency, footprint polygon)",
+        timing: "< 15.0 s"
+      },
+      8: {
+        name: "M9: Uncertainty Calibrator",
+        paradigm: "Conformal Residual Quantiles",
+        icon: "📊",
+        color: "#818CF8",
+        desc: "Assigns tier-calibrated 90% confidence intervals to every metric. Enforces physical sensor noise floors and interval ordering (Photo > Video > LiDAR).",
+        src: "src/areamap/nodes/calibrate.py",
+        inputs: "room_geometry, stitched_plan, tier",
+        outputs: "intervals{key: Interval}",
+        timing: "< 2.0 s"
+      },
+      9: {
+        name: "M10: Damage Detection",
+        paradigm: "VLM + SAM Mask + Replay Cache",
+        icon: "🔍",
+        color: "#C084FC",
+        desc: "Identifies damage classes (water stain, crack, mold) and bounding boxes. Projects SAM mask to surface plane for metric area extent (m²).",
+        src: "src/areamap/nodes/damage.py",
+        inputs: "Surface images, surface IDs",
+        outputs: "damage[] (DamageRegion)",
+        timing: "< 45.0 s"
+      },
+      10: {
+        name: "M11: Concealed Rule Engine",
+        paradigm: "100% Deterministic Science Rules",
+        icon: "⚡",
+        color: "#FBBF24",
+        desc: "Applies building forensics (ceiling water stain below wet area -> leak; baseboard swelling -> cavity moisture). Zero hallucination.",
+        src: "src/areamap/nodes/concealed.py",
+        inputs: "damage[], surface_id",
+        outputs: "concealed_flags[] (rule_id, evidence)",
+        timing: "< 1.0 s"
+      },
+      11: {
+        name: "M12: Scope Line Items",
+        paradigm: "Catalog Mapping + Propagated Uncertainty",
+        icon: "📋",
+        color: "#FBBF24",
+        desc: "Derives trade line items directly from measured damage extents and repair catalog multipliers. Propagates confidence intervals to quantities.",
+        src: "src/areamap/nodes/scope.py",
+        inputs: "damage[], concealed_flags[]",
+        outputs: "scope_items[] (ScopeItem)",
+        timing: "< 2.0 s"
+      },
+      12: {
+        name: "M13: QA Critic & Sanity",
+        paradigm: "Topological Rules & Auto-Feedback",
+        icon: "🛡️",
+        color: "#FB7185",
+        desc: "Validates wall sum closure, 90-degree angles, symmetry, interval consistency. On violation, triggers interval widening or flags warnings.",
+        src: "src/areamap/nodes/qa_critic.py",
+        inputs: "Complete state",
+        outputs: "qa_report (passed, failed_checks)",
+        timing: "< 2.0 s"
+      },
+      13: {
+        name: "M14: Export & Render",
+        paradigm: "Deterministic SVG + JSON Exporter",
+        icon: "📦",
+        color: "#34D399",
+        desc: "Generates out/plan.json conforming to capture_v1 schema, out/plan.svg vector floor plan with dimensions and damage badges, and out/run_log.json.",
+        src: "src/areamap/nodes/export.py",
+        inputs: "Complete verified state",
+        outputs: "out/plan.json, out/plan.svg, out/run_log.json",
+        timing: "< 5.0 s"
+      }
+    };
+
+    const rawNodes = [
+      { id: 1, label: "M1 Ingest & Router\n[Deterministic]", shape: "box", color: { background: "#0F2B48", border: "#38BDF8" }, font: { color: "#FFF", face: "Outfit" }, x: 0, y: -280 },
+      
+      { id: 2, label: "M3 LiDAR Tier\n[Depth+Poses]", shape: "box", color: { background: "#0F2B48", border: "#38BDF8" }, font: { color: "#FFF", face: "Outfit" }, x: -260, y: -160 },
+      { id: 3, label: "M7 Video Tier\n[SfM+Scale]", shape: "box", color: { background: "#0F2B48", border: "#38BDF8" }, font: { color: "#FFF", face: "Outfit" }, x: 0, y: -160 },
+      { id: 4, label: "M8 Photo Tier\n[Depth Priors]", shape: "box", color: { background: "#0F2B48", border: "#38BDF8" }, font: { color: "#FFF", face: "Outfit" }, x: 260, y: -160 },
+
+      { id: 5, label: "M4 Room Geometry\n[RANSAC Planes]", shape: "box", color: { background: "#1E1B4B", border: "#818CF8" }, font: { color: "#FFF", face: "Outfit" }, x: 0, y: -40 },
+      { id: 6, label: "M5 Openings\n[Cutout Analysis]", shape: "box", color: { background: "#1E1B4B", border: "#818CF8" }, font: { color: "#FFF", face: "Outfit" }, x: 0, y: 60 },
+      { id: 7, label: "M6 Multi-Room Stitch\n[Pose Graph Loop Closure]", shape: "box", color: { background: "#1E1B4B", border: "#818CF8" }, font: { color: "#FFF", face: "Outfit" }, x: 0, y: 160 },
+      { id: 8, label: "M9 Calibrator\n[Confidence Intervals]", shape: "box", color: { background: "#1E1B4B", border: "#818CF8" }, font: { color: "#FFF", face: "Outfit" }, x: 0, y: 260 },
+
+      { id: 9, label: "M10 Damage Detection\n[VLM + SAM]", shape: "box", color: { background: "#3B0764", border: "#C084FC" }, font: { color: "#FFF", face: "Outfit" }, x: -160, y: 360 },
+      { id: 10, label: "M11 Concealed Rules\n[Deterministic Engine]", shape: "box", color: { background: "#451A03", border: "#FBBF24" }, font: { color: "#FFF", face: "Outfit" }, x: 160, y: 360 },
+      { id: 11, label: "M12 Scope Generator\n[Catalog Mapping]", shape: "box", color: { background: "#451A03", border: "#FBBF24" }, font: { color: "#FFF", face: "Outfit" }, x: 0, y: 460 },
+
+      { id: 12, label: "M13 QA Critic\n[Topological Checks]", shape: "box", color: { background: "#4C0519", border: "#FB7185" }, font: { color: "#FFF", face: "Outfit" }, x: 0, y: 560 },
+      { id: 13, label: "M14 Export & Render\n[JSON + SVG]", shape: "box", color: { background: "#064E3B", border: "#34D399" }, font: { color: "#FFF", face: "Outfit" }, x: 0, y: 670 }
+    ];
+
+    const rawEdges = [
+      { from: 1, to: 2, label: "tier=lidar", color: { color: "#38BDF8" }, arrows: "to" },
+      { from: 1, to: 3, label: "tier=video", color: { color: "#38BDF8" }, arrows: "to" },
+      { from: 1, to: 4, label: "tier=photo", color: { color: "#38BDF8" }, arrows: "to" },
+
+      { from: 2, to: 5, label: "point_cloud", color: { color: "#818CF8" }, arrows: "to" },
+      { from: 3, to: 5, label: "point_cloud", color: { color: "#818CF8" }, arrows: "to" },
+      { from: 4, to: 5, label: "point_cloud", color: { color: "#818CF8" }, arrows: "to" },
+
+      { from: 5, to: 6, label: "walls", color: { color: "#818CF8" }, arrows: "to" },
+      { from: 6, to: 7, label: "openings", color: { color: "#818CF8" }, arrows: "to" },
+      { from: 7, to: 8, label: "stitched_plan", color: { color: "#818CF8" }, arrows: "to" },
+
+      { from: 8, to: 9, label: "calibrated_surfaces", color: { color: "#C084FC" }, arrows: "to" },
+      { from: 9, to: 10, label: "damage_findings", color: { color: "#FBBF24" }, arrows: "to" },
+      { from: 10, to: 11, label: "concealed_flags", color: { color: "#FBBF24" }, arrows: "to" },
+      { from: 9, to: 11, label: "metric_extents", color: { color: "#FBBF24" }, arrows: "to" },
+
+      { from: 11, to: 12, label: "scope_items", color: { color: "#FB7185" }, arrows: "to" },
+      { from: 12, to: 13, label: "passed", color: { color: "#34D399" }, arrows: "to" },
+      { from: 12, to: 8, label: "retry / widen interval", color: { color: "#FB7185", dash: true }, arrows: "to" }
+    ];
+
+    const container = document.getElementById("network");
+    const data = {
+      nodes: new vis.DataSet(rawNodes),
+      edges: new vis.DataSet(rawEdges)
+    };
+
+    const options = {
+      physics: {
+        enabled: false
+      },
+      nodes: {
+        borderWidth: 2,
+        shadow: {
+          enabled: true,
+          color: "rgba(0,0,0,0.5)",
+          size: 10,
+          x: 2,
+          y: 2
+        },
+        margin: 12,
+        shapeProperties: {
+          borderRadius: 8
+        }
+      },
+      edges: {
+        smooth: {
+          type: "cubicBezier",
+          roundness: 0.2
+        },
+        font: {
+          face: "JetBrains Mono",
+          size: 11,
+          color: "#94A3B8",
+          strokeWidth: 0
+        },
+        width: 2
+      },
+      interaction: {
+        hover: true,
+        zoomView: true
+      }
+    };
+
+    const network = new vis.Network(container, data, options);
+
+    network.on("click", function(params) {
+      if (params.nodes.length > 0) {
+        const nodeId = params.nodes[0];
+        const info = nodeDetails[nodeId];
+        if (info) {
+          document.getElementById("panel-name").innerText = info.name;
+          document.getElementById("panel-paradigm").innerText = info.paradigm;
+          document.getElementById("panel-icon").innerText = info.icon;
+          document.getElementById("panel-desc").innerText = info.desc;
+          document.getElementById("panel-src").innerText = info.src;
+          document.getElementById("panel-inputs").innerText = info.inputs;
+          document.getElementById("panel-outputs").innerText = info.outputs;
+          document.getElementById("panel-timing").innerText = info.timing;
+        }
+      }
+    });
+
+    function filterTier(tier) {
+      document.querySelectorAll(".tier-btn").forEach(b => b.classList.remove("active"));
+      event.target.classList.add("active");
+
+      if (tier === "all") {
+        data.nodes.update(rawNodes);
+      } else {
+        const visibleNodeIds = new Set([1, 5, 6, 7, 8, 9, 10, 11, 12, 13]);
+        if (tier === "lidar") visibleNodeIds.add(2);
+        if (tier === "video") visibleNodeIds.add(3);
+        if (tier === "photo") visibleNodeIds.add(4);
+
+        const updated = rawNodes.map(n => {
+          if (!visibleNodeIds.has(n.id)) {
+            return { ...n, hidden: true };
+          }
+          return { ...n, hidden: false };
+        });
+        data.nodes.update(updated);
+      }
+    }
+  </script>
+</body>
+</html>

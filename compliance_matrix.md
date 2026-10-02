@@ -1,0 +1,36 @@
+# AreaMap Compliance Matrix
+
+This matrix maps every requirement, gate, and module specified in the project specification to its implementation source file, produced artifact, and verification status.
+
+| Requirement / Gate | Description | Implementation File | Artifact / Verification Output | Status |
+|---|---|---|---|---|
+| **G1: Opening Widths** | Width error <= 2 cm on >= 85% of openings; missed + phantom count as misses | [`bench/gates.py`](file:///src/areamap/nodes/openings.py) & [`src/areamap/nodes/openings.py`](file:///src/areamap/nodes/openings.py) | Benchmark report (`out/bench_results.json`) | In Progress |
+| **G2: Ceiling Height** | Ceiling error <= 1.5 cm; spread <= 1 cm | [`src/areamap/geometry/planes.py`](file:///src/areamap/geometry/planes.py) | Benchmark G2 table | In Progress |
+| **G3: Repeatability** | Two captures of same room agree within 1 cm or 0.5% | [`bench/harness.py`](file:///bench/harness.py) | Repeatability analysis log | In Progress |
+| **G4: Drift Accountability** | Stitched footprint with drift correction ON vs OFF | [`src/areamap/geometry/posegraph.py`](file:///src/areamap/geometry/posegraph.py), [`bench/ablation_drift.py`](file:///bench/ablation_drift.py) | `reports/ablation_drift.png`, table | In Progress |
+| **G5: Photo Whole-Property** | Multi-room photo stitch, correct adjacency, no overlaps, footprint <= 8% | [`src/areamap/tiers/photo.py`](file:///src/areamap/tiers/photo.py), [`src/areamap/nodes/stitch.py`](file:///src/areamap/nodes/stitch.py) | Multi-room floor plan SVG/JSON | In Progress |
+| **G6: Photo Wall Lengths** | Photo wall lengths within +/- 8% with calibrated intervals | [`src/areamap/tiers/photo.py`](file:///src/areamap/tiers/photo.py), [`src/areamap/nodes/calibrate.py`](file:///src/areamap/nodes/calibrate.py) | Benchmark G6 gate table | In Progress |
+| **G7: Video Wall Lengths** | Video wall lengths within +/- 3% | [`src/areamap/tiers/video.py`](file:///src/areamap/tiers/video.py) | Benchmark G7 gate table | In Progress |
+| **G8: Calibration** | Nominal 90% intervals cover ground truth in 85-95% of cases | [`src/areamap/nodes/calibrate.py`](file:///src/areamap/nodes/calibrate.py), [`bench/calibration_report.py`](file:///bench/calibration_report.py) | Calibration coverage report | In Progress |
+| **G9: Head-to-Head** | Beat or tie consumer app on >= 70% of shared dimensions | [`bench/headtohead.py`](file:///bench/headtohead.py) | `reports/headtohead_table.md` | In Progress |
+| **G10: Fix Loop** | Worst gate root cause, shipped fix, regenerable diff (25% score) | [`fixloop/declaration.md`](file:///fixloop/declaration.md), [`fixloop/diff.patch`](file:///fixloop/diff.patch) | `fixloop/before/`, `fixloop/after/` | In Progress |
+| **M0: Contract & Schema** | Pydantic state model, interval format, schema export | [`src/areamap/state.py`](file:///src/areamap/state.py), [`schema/capture_v1.json`](file:///schema/capture_v1.json) | Valid JSON Schema | Complete |
+| **M1: Ingest & Router** | Auto-detect tier (photo/video/lidar), parse EXIF/intrinsics, validate | [`src/areamap/nodes/ingest.py`](file:///src/areamap/nodes/ingest.py) | Ingest validation log | Scaffolded |
+| **M2: Benchmark Harness** | Compare pipeline outputs against ground-truth CSVs | [`bench/harness.py`](file:///bench/harness.py) | Pass/Fail summary table | Scaffolded |
+| **M3: LiDAR Ingest** | Depth + poses + intrinsics to point cloud, filtering, downsample | [`src/areamap/tiers/lidar.py`](file:///src/areamap/tiers/lidar.py) | Processed point cloud | Scaffolded |
+| **M4: Room Geometry** | RANSAC planes, wall/ceiling/floor, area, polygon | [`src/areamap/geometry/planes.py`](file:///src/areamap/geometry/planes.py), [`src/areamap/nodes/geometry.py`](file:///src/areamap/nodes/geometry.py) | Dimensioned room model | Scaffolded |
+| **M5: Openings** | Door/window detection, cutout analysis, phantom suppression | [`src/areamap/geometry/openings.py`](file:///src/areamap/geometry/openings.py), [`src/areamap/nodes/openings.py`](file:///src/areamap/nodes/openings.py) | Openings dictionary | Scaffolded |
+| **M6: Stitcher & Drift** | Multi-room pose graph, adjacency, loop closure, no-overlap | [`src/areamap/geometry/posegraph.py`](file:///src/areamap/geometry/posegraph.py), [`src/areamap/nodes/stitch.py`](file:///src/areamap/nodes/stitch.py) | Stitched whole-property plan | Scaffolded |
+| **M7: Video Tier** | Frame selection, SfM, scale recovery from priors | [`src/areamap/tiers/video.py`](file:///src/areamap/tiers/video.py) | Scaled point cloud | Scaffolded |
+| **M8: Photo Tier** | Metric depth estimation, layout priors, cross-room stitch | [`src/areamap/tiers/photo.py`](file:///src/areamap/tiers/photo.py) | Estimated layout & plan | Scaffolded |
+| **M9: Calibrator** | Tier-aware confidence intervals, physical sensor floors | [`src/areamap/nodes/calibrate.py`](file:///src/areamap/nodes/calibrate.py), [`src/areamap/geometry/uncertainty.py`](file:///src/areamap/geometry/uncertainty.py) | Interval bounds per measurement | Scaffolded |
+| **M10: Damage Detection** | VLM semantic proposal + SAM mask + depth metric area | [`src/areamap/nodes/damage.py`](file:///src/areamap/nodes/damage.py) | Damage region list with extent | Scaffolded |
+| **M11: Concealed Rules** | Deterministic rule engine for hidden damage flags | [`src/areamap/nodes/concealed.py`](file:///src/areamap/nodes/concealed.py), [`src/areamap/rules/concealed_rules.yaml`](file:///src/areamap/rules/concealed_rules.yaml) | Concealed flags with rule IDs | Scaffolded |
+| **M12: Scope Generation** | Damage class to catalog repair line items | [`src/areamap/nodes/scope.py`](file:///src/areamap/nodes/scope.py), [`src/areamap/catalog/scope_items.yaml`](file:///src/areamap/catalog/scope_items.yaml) | Scope item list with quantities | Scaffolded |
+| **M13: QA Critic** | Deterministic checks (closure, 90-degree angles, symmetry) | [`src/areamap/nodes/qa_critic.py`](file:///src/areamap/nodes/qa_critic.py) | QA report & warnings | Scaffolded |
+| **M14: Export & Render** | JSON conforming to schema and SVG floor plan | [`src/areamap/nodes/export.py`](file:///src/areamap/nodes/export.py), [`src/areamap/render/plan_svg.py`](file:///src/areamap/render/plan_svg.py) | `plan.json`, `plan.svg` | Scaffolded |
+| **M15: Orchestration** | LangGraph workflow + fallback MCP tool protocol | [`src/areamap/graph.py`](file:///src/areamap/graph.py), [`src/areamap/mcp_server/`](file:///src/areamap/mcp_server/) | Deterministic pipeline execution | Scaffolded |
+| **M16: Head-to-Head** | Comparison against consumer scanning app | [`bench/headtohead.py`](file:///bench/headtohead.py) | Consumer app comparison diff | Scaffolded |
+| **M17: Fix Loop** | Regenerable before/after bundle & patch | [`fixloop/`](file:///fixloop/) | `declaration.md`, `diff.patch` | Scaffolded |
+| **M18: Protocol** | One-page non-engineer scanning guide & device matrix | [`protocol/capture_protocol.md`](file:///protocol/capture_protocol.md), [`reports/device_matrix.md`](file:///reports/device_matrix.md) | Protocol documentation | Scaffolded |
+| **M19: Tech Report** | 6-page comprehensive technical report | [`reports/technical_report.md`](file:///reports/technical_report.md) | Technical report document | Scaffolded |

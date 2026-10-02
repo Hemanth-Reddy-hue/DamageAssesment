@@ -1,0 +1,32 @@
+# Virtual Environment
+venv/
+.venv/
+env/
+
+# Python cache
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Weights & Large Models
+models/*
+!models/.gitkeep
+
+# Outputs
+out/
+dist/
+build/
+*.egg-info/
+
+# Local sensitive env
+.env.local
+.env.*.local
+
+# IDE
+.vscode/
+.idea/
+*.swp
