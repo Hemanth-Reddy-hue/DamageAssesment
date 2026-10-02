@@ -38,7 +38,7 @@ def ingest_node(state: CaptureState) -> dict[str, Any]:
         state.warnings.append(f"Input path does not exist: {capture_path}. Using synthetic room.")
         tier = state.tier or "lidar"
     else:
-        tier = detect_tier(capture_path)
+        tier = state.tier if state.tier in ["lidar", "video", "photo"] else detect_tier(capture_path)
 
     updates: dict[str, Any] = {"tier": tier}
 

@@ -114,3 +114,4 @@ class CaptureState(BaseModel):
     qa_report: QAReport | None = None
     timings: dict[str, float] = Field(default_factory=dict)
     warnings: list[str] = Field(default_factory=list)
+    output_dir: str = "out"

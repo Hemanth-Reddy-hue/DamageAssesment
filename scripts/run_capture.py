@@ -23,6 +23,7 @@ def main():
     init_state = CaptureState(
         capture_path=str(args.capture),
         tier=args.tier,
+        output_dir=str(args.out),
     )
 
     graph = build_areamap_graph()

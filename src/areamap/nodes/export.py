@@ -7,10 +7,11 @@ from typing import Any
 from areamap.state import CaptureState
 from areamap.render.plan_svg import render_plan_svg
 
-def export_node(state: CaptureState, output_dir: Path | str = "out") -> dict[str, Any]:
+def export_node(state: CaptureState, output_dir: Path | str | None = None) -> dict[str, Any]:
     """Export finalized results to plan.json, plan.svg, and run_log.json."""
     t0 = time.time()
-    out = Path(output_dir)
+    target_dir = output_dir or getattr(state, "output_dir", "out") or "out"
+    out = Path(target_dir)
     out.mkdir(parents=True, exist_ok=True)
 
     # 1. Output plan.json
