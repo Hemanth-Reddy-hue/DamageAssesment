@@ -19,9 +19,9 @@ def run_drift_ablation():
 
     drift_reduction_pct = ((off_error_m2 - on_error_m2) / off_error_m2) * 100
 
-    print(f"Ground Truth Footprint Area: {ground_truth_footprint_m2:.2f} m²")
-    print(f"Drift Correction OFF (raw poses): {off_footprint_m2:.2f} m² (Error: {off_error_m2:.2f} m² / {off_error_pct:.2f}%)")
-    print(f"Drift Correction ON  (optimized): {on_footprint_m2:.2f} m² (Error: {on_error_m2:.2f} m² / {on_error_pct:.2f}%)")
+    print(f"Ground Truth Footprint Area: {ground_truth_footprint_m2:.2f} m^2")
+    print(f"Drift Correction OFF (raw poses): {off_footprint_m2:.2f} m^2 (Error: {off_error_m2:.2f} m^2 / {off_error_pct:.2f}%)")
+    print(f"Drift Correction ON  (optimized): {on_footprint_m2:.2f} m^2 (Error: {on_error_m2:.2f} m^2 / {on_error_pct:.2f}%)")
     print(f"Drift Error Reduction: {drift_reduction_pct:.2f}%")
     print("Status: PASS (Measurable multi-room drift reduction demonstrated)")
 

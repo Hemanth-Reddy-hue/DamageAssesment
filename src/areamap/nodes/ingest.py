@@ -1,7 +1,9 @@
+"""Node M1: Ingest and Tier Router."""
+
 import time
 import numpy as np
 from pathlib import Path
-from typing import Any
+from typing import Any, List
 from areamap.state import CaptureState
 from areamap.tiers.lidar import ingest_lidar_capture
 from areamap.tiers.video import ingest_video_capture
@@ -40,6 +42,45 @@ def ingest_node(state: CaptureState) -> dict[str, Any]:
     else:
         tier = state.tier if state.tier in ["lidar", "video", "photo"] else detect_tier(capture_path)
 
+    # 1. Check for multi-room directory structure
+    subdirs: List[Path] = []
+    if capture_path.exists() and capture_path.is_dir():
+        ignore_names = {"depth", "confidence", "cache", "__pycache__", ".git", ".pytest_cache"}
+        subdirs = sorted([d for d in capture_path.iterdir() if d.is_dir() and d.name.lower() not in ignore_names])
+
+    cache_dir = Path("data/cache")
+    cache_dir.mkdir(parents=True, exist_ok=True)
+
+    if len(subdirs) >= 2:
+        # Multi-room capture dataset
+        rooms_list: List[str] = []
+        point_clouds_map: dict[str, str] = {}
+        device_meta = {"tier": tier, "multi_room": True, "room_count": len(subdirs), "source": str(capture_path)}
+
+        for idx, s_dir in enumerate(subdirs):
+            r_id = f"room_{idx+1:02d}"
+            r_tier = state.tier if state.tier in ["lidar", "video", "photo"] else detect_tier(s_dir)
+            if r_tier == "lidar":
+                pts, meta = ingest_lidar_capture(s_dir)
+            elif r_tier == "video":
+                pts, meta = ingest_video_capture(s_dir)
+            else:
+                pts, meta = ingest_photo_capture(s_dir)
+
+            cloud_path = cache_dir / f"cloud_{r_id}.npy"
+            np.save(cloud_path, pts)
+            rooms_list.append(r_id)
+            point_clouds_map[r_id] = str(cloud_path)
+
+        return {
+            "tier": tier,
+            "device_meta": device_meta,
+            "rooms": rooms_list,
+            "point_clouds": point_clouds_map,
+            "timings": {**state.timings, "ingest": round(time.time() - t0, 4)}
+        }
+
+    # 2. Single-room capture
     updates: dict[str, Any] = {"tier": tier}
 
     if tier == "lidar":
@@ -49,9 +90,6 @@ def ingest_node(state: CaptureState) -> dict[str, Any]:
     else:
         pts, meta = ingest_photo_capture(capture_path)
 
-    # Cache point cloud artifact
-    cache_dir = Path("data/cache")
-    cache_dir.mkdir(parents=True, exist_ok=True)
     cloud_path = cache_dir / "cloud_room_01.npy"
     np.save(cloud_path, pts)
 
