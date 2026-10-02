@@ -3,10 +3,11 @@
 import os
 from pathlib import Path
 from pydantic import BaseModel, Field
-from dotenv import load_dotenv
-
-# Load .env if present
-load_dotenv()
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    pass
 
 class AreaMapConfig(BaseModel):
     hf_token: str | None = Field(default_factory=lambda: os.getenv("HF_TOKEN"))

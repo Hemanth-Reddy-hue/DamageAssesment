@@ -1,5 +1,4 @@
-"""Door, window, and passageway detection via plane cutout analysis."""
-
+from typing import Any
 from areamap.state import Opening, WallSegment
 from areamap.geometry.uncertainty import calculate_interval
 

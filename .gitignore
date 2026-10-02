@@ -25,7 +25,8 @@ build/
 # Local sensitive env
 .env.local
 .env.*.local
-
+Data/
+.env
 # IDE
 .vscode/
 .idea/

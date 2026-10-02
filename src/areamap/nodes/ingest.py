@@ -1,6 +1,5 @@
-"""Node M1: Ingest and Tier Router."""
-
 import time
+import numpy as np
 from pathlib import Path
 from typing import Any
 from areamap.state import CaptureState
@@ -50,8 +49,15 @@ def ingest_node(state: CaptureState) -> dict[str, Any]:
     else:
         pts, meta = ingest_photo_capture(capture_path)
 
+    # Cache point cloud artifact
+    cache_dir = Path("data/cache")
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    cloud_path = cache_dir / "cloud_room_01.npy"
+    np.save(cloud_path, pts)
+
     updates["device_meta"] = meta
     updates["rooms"] = ["room_01"]
+    updates["point_clouds"] = {"room_01": str(cloud_path)}
     updates["timings"] = {**state.timings, "ingest": round(time.time() - t0, 4)}
 
     return updates
