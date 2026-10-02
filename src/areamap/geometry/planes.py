@@ -8,8 +8,9 @@ from areamap.geometry.uncertainty import calculate_interval
 def fit_plane_ransac(
     points: np.ndarray,
     distance_threshold: float = 0.035,
-    max_iterations: int = 600,
-    min_inliers: int = 150
+    max_iterations: int = 500,
+    min_inliers: int = 100,
+    normal_filter: str | None = None  # None | "horizontal" | "vertical"
 ) -> Tuple[np.ndarray | None, float | None, np.ndarray]:
     """Fit a single 3D plane ax + by + cz + d = 0 via RANSAC with PCA refinement.
     
@@ -24,7 +25,6 @@ def fit_plane_ransac(
     best_normal: np.ndarray | None = None
     best_d: float | None = None
 
-    # Vectorized random sampling
     for _ in range(max_iterations):
         sample_idx = np.random.choice(n_points, 3, replace=False)
         p1, p2, p3 = points[sample_idx]
@@ -37,6 +37,13 @@ def fit_plane_ransac(
         if norm < 1e-6:
             continue
         normal = normal / norm
+
+        # Optional orientation filter
+        if normal_filter == "horizontal" and abs(normal[2]) < 0.70:
+            continue
+        elif normal_filter == "vertical" and abs(normal[2]) > 0.35:
+            continue
+
         d = -float(np.dot(normal, p1))
 
         # Point-to-plane orthogonal distance: |p . n + d|
@@ -59,12 +66,10 @@ def fit_plane_ransac(
     cov = centered.T @ centered / len(centered)
     eigenvalues, eigenvectors = np.linalg.eigh(cov)
 
-    # Smallest eigenvalue corresponds to plane normal
     refined_normal = eigenvectors[:, 0]
     refined_norm = np.linalg.norm(refined_normal)
     if refined_norm > 1e-6:
         refined_normal = refined_normal / refined_norm
-        # Maintain consistent normal sign
         if np.dot(refined_normal, best_normal) < 0:
             refined_normal = -refined_normal
         refined_d = -float(np.dot(refined_normal, centroid))
@@ -83,22 +88,33 @@ def extract_horizontal_planes(
     remaining = points.copy()
     horizontal_planes = []
 
-    for _ in range(5):
-        normal, d, inliers = fit_plane_ransac(remaining, distance_threshold=distance_threshold, min_inliers=100)
+    for _ in range(8):
+        normal, d, inliers = fit_plane_ransac(
+            remaining,
+            distance_threshold=distance_threshold,
+            min_inliers=80,
+            normal_filter="horizontal"
+        )
         if normal is None or d is None or len(inliers) == 0:
             break
 
-        # Check if plane is horizontal (normal aligned with Z axis: |nz| >= 0.75)
-        if abs(normal[2]) >= 0.75:
-            # Normalize normal so nz > 0 (pointing UP)
-            if normal[2] < 0:
-                normal = -normal
-                d = -d
+        # Normalize normal so nz > 0 (pointing UP)
+        if normal[2] < 0:
+            normal = -normal
+            d = -d
 
-            inlier_pts = remaining[inliers]
-            z_mean = np.mean(inlier_pts[:, 2])
-            residual_std = float(np.std(np.dot(inlier_pts, normal) + d))
+        inlier_pts = remaining[inliers]
+        z_mean = float(np.mean(inlier_pts[:, 2]))
+        residual_std = float(np.std(np.dot(inlier_pts, normal) + d))
 
+        # Check if plane is distinct in height from existing horizontal planes
+        is_distinct = True
+        for p in horizontal_planes:
+            if abs(z_mean - p["z_mean"]) < 0.30:  # Within 30cm is the same plane
+                is_distinct = False
+                break
+
+        if is_distinct:
             horizontal_planes.append({
                 "normal": normal,
                 "d": d,
@@ -107,17 +123,12 @@ def extract_horizontal_planes(
                 "inlier_count": len(inliers)
             })
 
-            # Remove inliers from remaining search pool
-            mask = np.ones(len(remaining), dtype=bool)
-            mask[inliers] = False
-            remaining = remaining[mask]
-            if len(remaining) < 100:
-                break
-        else:
-            # Remove non-horizontal plane inliers to uncover other planes
-            mask = np.ones(len(remaining), dtype=bool)
-            mask[inliers] = False
-            remaining = remaining[mask]
+        # Remove inliers from remaining search pool
+        mask = np.ones(len(remaining), dtype=bool)
+        mask[inliers] = False
+        remaining = remaining[mask]
+        if len(remaining) < 80:
+            break
 
     if not horizontal_planes:
         return None, None
