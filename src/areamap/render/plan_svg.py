@@ -65,49 +65,65 @@ def render_plan_svg(state: CaptureState, output_path: Path | str) -> str:
         f'  <text x="40" y="70" font-family="sans-serif" font-size="14" fill="#64748B">Tier: {state.tier.upper()} | Status: {qa_status}{footprint_text}</text>',
     ]
 
-    # Color palette for distinct rooms
-    room_fills = ["#FFFFFF", "#F1F5F9", "#F8FAFC", "#EFF6FF", "#F0FDF4"]
+    # Professional architectural room color palette (solid, non-transparent tints)
+    room_palettes = [
+        {"fill": "#E0F2FE", "border": "#0284C7", "badge_bg": "#BAE6FD", "badge_txt": "#0369A1"},  # Sky Blue (Living Room)
+        {"fill": "#EEF2FF", "border": "#6366F1", "badge_bg": "#E0E7FF", "badge_txt": "#4338CA"},  # Indigo (Bedroom)
+        {"fill": "#F1F5F9", "border": "#64748B", "badge_bg": "#E2E8F0", "badge_txt": "#334155"},  # Slate (Hallway)
+        {"fill": "#FEF3C7", "border": "#D97706", "badge_bg": "#FDE68A", "badge_txt": "#B45309"},  # Amber (Kitchen)
+        {"fill": "#ECFDF5", "border": "#059669", "badge_bg": "#A7F3D0", "badge_txt": "#047857"},  # Mint (Bathroom/Study)
+    ]
 
     # Draw each room
     for idx, (r_id, room) in enumerate(state.room_geometry.items()):
-        fill_color = room_fills[idx % len(room_fills)]
+        theme = room_palettes[idx % len(room_palettes)]
         if room.floor_polygon:
             pts_str = " ".join([f"{offset_x + pt[0]*scale:.2f},{offset_y + pt[1]*scale:.2f}" for pt in room.floor_polygon])
-            elements.append(f'  <polygon points="{pts_str}" fill="{fill_color}" stroke="#0F172A" stroke-width="5" stroke-linejoin="round" filter="url(#shadow)"/>')
+            elements.append(f'  <polygon points="{pts_str}" fill="{theme["fill"]}" stroke="#0F172A" stroke-width="5" stroke-linejoin="round" filter="url(#shadow)"/>')
 
-        # Draw room label
+        # Draw room label card pill
         if room.floor_polygon:
             cx = offset_x + (sum(p[0] for p in room.floor_polygon) / len(room.floor_polygon)) * scale
             cy = offset_y + (sum(p[1] for p in room.floor_polygon) / len(room.floor_polygon)) * scale
-            elements.append(f'  <text x="{cx:.2f}" y="{cy - 10:.2f}" font-family="sans-serif" font-size="15" font-weight="bold" fill="#1E293B" text-anchor="middle">{room.room_name}</text>')
+            card_w, card_h = 136.0, 58.0
+            elements.append(f'  <g transform="translate({cx - card_w/2:.2f}, {cy - card_h/2:.2f})">')
+            elements.append(f'    <rect width="{card_w}" height="{card_h}" rx="8" fill="#FFFFFF" fill-opacity="0.94" stroke="{theme["border"]}" stroke-width="1.5" filter="url(#shadow)"/>')
+            elements.append(f'    <text x="{card_w/2}" y="18" font-family="sans-serif" font-size="13" font-weight="bold" fill="#0F172A" text-anchor="middle">{room.room_name}</text>')
             area_val = room.floor_area.value
             area_lo = room.floor_area.lo
             area_hi = room.floor_area.hi
-            elements.append(f'  <text x="{cx:.2f}" y="{cy + 10:.2f}" font-family="sans-serif" font-size="12" fill="#475569" text-anchor="middle">{area_val:.2f} m² [{area_lo:.2f}, {area_hi:.2f}]</text>')
+            elements.append(f'    <text x="{card_w/2}" y="34" font-family="sans-serif" font-size="11" font-weight="600" fill="#2563EB" text-anchor="middle">{area_val:.2f} m² [{area_lo:.2f}, {area_hi:.2f}]</text>')
             ceil_val = room.ceiling_height.value
-            elements.append(f'  <text x="{cx:.2f}" y="{cy + 26:.2f}" font-family="sans-serif" font-size="11" fill="#64748B" text-anchor="middle">H: {ceil_val:.2f} m</text>')
+            elements.append(f'    <text x="{card_w/2}" y="48" font-family="sans-serif" font-size="10" fill="#64748B" text-anchor="middle">Ceiling: {ceil_val:.2f} m</text>')
+            elements.append('  </g>')
 
         # Draw walls and dimension lines
         for wall in room.walls:
             sx, sy = offset_x + wall.start[0] * scale, offset_y + wall.start[1] * scale
             ex, ey = offset_x + wall.end[0] * scale, offset_y + wall.end[1] * scale
-            elements.append(f'  <line x1="{sx:.2f}" y1="{sy:.2f}" x2="{ex:.2f}" y2="{ey:.2f}" stroke="#0F172A" stroke-width="4"/>')
+            elements.append(f'  <line x1="{sx:.2f}" y1="{sy:.2f}" x2="{ex:.2f}" y2="{ey:.2f}" stroke="#0F172A" stroke-width="4.5" stroke-linecap="round"/>')
 
             # Dimension label
             mx, my = (sx + ex) / 2.0, (sy + ey) / 2.0
-            elements.append(f'  <text x="{mx:.2f}" y="{my - 7:.2f}" font-family="sans-serif" font-size="10" fill="#2563EB" text-anchor="middle">{wall.length.value:.2f}m [{wall.length.lo:.2f}, {wall.length.hi:.2f}]</text>')
+            elements.append(f'  <text x="{mx:.2f}" y="{my - 7:.2f}" font-family="sans-serif" font-size="10" font-weight="600" fill="#1D4ED8" text-anchor="middle">{wall.length.value:.2f}m [{wall.length.lo:.2f}, {wall.length.hi:.2f}]</text>')
 
-        # Draw openings
+        # Draw openings (doors and windows)
         for op in room.openings:
             pos = op.position
             if len(pos) >= 2:
                 ox = offset_x + pos[0] * scale
                 oy = offset_y + pos[1] * scale
                 if op.type in ["door", "passageway"]:
-                    elements.append(f'  <circle cx="{ox:.2f}" cy="{oy:.2f}" r="5" fill="#10B981"/>')
-                    elements.append(f'  <text x="{ox + 8:.2f}" y="{oy + 4:.2f}" font-family="sans-serif" font-size="9" fill="#047857">Door {op.width.value:.2f}m</text>')
+                    # Architectural door marker with swing circle
+                    elements.append(f'  <!-- Doorway {op.opening_id} -->')
+                    elements.append(f'  <circle cx="{ox:.2f}" cy="{oy:.2f}" r="5.5" fill="#10B981" stroke="#047857" stroke-width="1.5"/>')
+                    elements.append(f'  <path d="M {ox:.2f} {oy:.2f} A 16 16 0 0 1 {ox + 16:.2f} {oy - 16:.2f}" fill="none" stroke="#059669" stroke-width="1.5" stroke-dasharray="3,2"/>')
+                    elements.append(f'  <text x="{ox + 10:.2f}" y="{oy + 14:.2f}" font-family="sans-serif" font-size="9" font-weight="bold" fill="#047857">Door {op.width.value:.2f}m</text>')
                 else:
-                    elements.append(f'  <rect x="{ox - 8:.2f}" y="{oy - 4:.2f}" width="16" height="8" fill="#38BDF8" stroke="#0284C7"/>')
+                    # Architectural window double line
+                    elements.append(f'  <!-- Window {op.opening_id} -->')
+                    elements.append(f'  <rect x="{ox - 10:.2f}" y="{oy - 4:.2f}" width="20" height="8" fill="#BAE6FD" stroke="#0284C7" stroke-width="1.5"/>')
+                    elements.append(f'  <line x1="{ox - 10:.2f}" y1="{oy:.2f}" x2="{ox + 10:.2f}" y2="{oy:.2f}" stroke="#0369A1" stroke-width="1"/>')
 
     # Draw damage overlays
     card_y = 120

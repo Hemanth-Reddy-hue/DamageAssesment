@@ -1,14 +1,40 @@
 """Module M8: Tier 3 Photo Stills Ingestion.
 
-Performs EXIF metadata extraction, perspective vanishing point rectification,
-deterministic metric scale recovery via architectural priors (camera height and doorway anchor),
-and synthesizes 3D room boundary point clouds for downstream RANSAC geometry extraction.
+Fixes applied:
+  #1 – Camera-to-camera positioning: Essential-matrix RANSAC + ICP registration.
+  #4 – Adaptive camera height from floor-seam + horizon lines.
+  #5 – Adaptive floor/wall seam detection from image content.
+  Depth – Metric depth engine (DepthEngine) backs per-image point clouds with
+           real pixel-level depth estimates instead of prior-only ray synthesis.
 """
 
 from pathlib import Path
 import numpy as np
+import cv2
 from PIL import Image, ExifTags
-from typing import Tuple, Any, List
+from typing import Tuple, Any, Dict, List, Optional
+
+from areamap.geometry.scene_geometry import (
+    detect_floor_wall_seam,
+    estimate_camera_height,
+    estimate_per_image_geometry,
+    CAM_HEIGHT_DEFAULT,
+)
+from areamap.geometry.registration import (
+    register_photo_sequence,
+    recover_scale_from_architecture,
+)
+from areamap.geometry.depth_engine import DepthEngine, depth_to_pointcloud
+
+# Module-level depth engine singleton (initialized once, reused across calls)
+_DEPTH_ENGINE: Optional[DepthEngine] = None
+
+def _get_depth_engine() -> DepthEngine:
+    """Return (or lazily create) the module-level DepthEngine singleton."""
+    global _DEPTH_ENGINE
+    if _DEPTH_ENGINE is None:
+        _DEPTH_ENGINE = DepthEngine()
+    return _DEPTH_ENGINE
 
 def extract_exif_intrinsics(image_path: Path | str) -> dict[str, float]:
     """Extract focal length, sensor geometry, and pinhole camera intrinsics from JPEG EXIF metadata."""
@@ -103,51 +129,66 @@ def recover_metric_scale_and_points(
     image_path: Path | str,
     intrinsics: dict[str, float],
     pitch_rad: float = 0.0,
-    camera_height_prior: float = 1.45,
+    camera_height_prior: float = CAM_HEIGHT_DEFAULT,  # FIX #4: no longer assumed 1.45 m
     door_height_prior: float = 2.05,
-    ceiling_height_prior: float = 2.50
+    ceiling_height_prior: float = 2.50,
+    # FIX #5: caller supplies the *detected* seam pixel; None → auto-detect
+    seam_v: Optional[float] = None,
+    gray: Optional[np.ndarray] = None,
 ) -> np.ndarray:
-    """Synthesize 3D metric room boundary coordinates using pinhole ray-plane intersections and architectural priors."""
-    cx, cy = intrinsics["cx"], intrinsics["cy"]
-    fx, fy = intrinsics["fy"], intrinsics["fy"]
+    """Synthesize 3D metric room boundary coordinates via pinhole ray-plane intersections.
+
+    FIX #4 & #5: camera height and floor-seam are estimated from the image
+    instead of being hardcoded constants.
+    """
+    cx, cy_center = intrinsics["cx"], intrinsics["cy"]
+    fx, fy = intrinsics["fx"], intrinsics["fy"]
     w, h = intrinsics["width"], intrinsics["height"]
+
+    # --- FIX #5: detect floor-wall seam from image content -----------------
+    if seam_v is None:
+        if gray is not None:
+            detected_seam, seam_conf = detect_floor_wall_seam(gray, cx, cy_center, fy)
+            if seam_conf >= 0.15:
+                seam_v = detected_seam
+            else:
+                # Low-confidence fallback: keep the old approximation but log it
+                seam_v = cy_center + 0.22 * h   # slightly less aggressive than 0.32
+        else:
+            seam_v = cy_center + 0.22 * h
+    # Sanity clamp
+    seam_v = float(np.clip(seam_v, 0.45 * h, 0.90 * h))
+
+    # --- FIX #4: camera height from seam position --------------------------
+    # Use the passed-in prior (already estimated per-image by the caller) or
+    # re-estimate here if the caller didn't pass a gray image.
+    actual_camera_height = camera_height_prior  # already adaptive from caller
 
     # Sample rays across the horizontal field of view
     u_samples = np.linspace(0.08 * w, 0.92 * w, 18)
     points_3d = []
 
-    # In an indoor photo, the floor-wall boundary line (baseboard) typically lies
-    # between 55% and 85% of image height
-    v_floor_nominal = cy + 0.32 * h
-
     for u in u_samples:
         # Radial azimuth angle in camera horizontal plane
         theta_azimuth = np.arctan((u - cx) / fx)
 
-        # Elevation angle below horizontal optical axis
-        phi_elevation = np.arctan((v_floor_nominal - cy) / fy) - pitch_rad
-        phi_elevation = max(0.18, phi_elevation)  # Minimum clearance to prevent division by zero
+        # FIX #5: use detected seam pixel, not cy + 0.32*h
+        phi_elevation = np.arctan((seam_v - cy_center) / fy) - pitch_rad
+        phi_elevation = max(0.12, phi_elevation)  # guard against near-zero
 
         # Ground distance from camera to baseboard via ray-plane intersection
-        dist_ground = camera_height_prior / np.tan(phi_elevation)
-        # Cap distance to realistic room range (1.2m to 8.5m)
-        dist_ground = float(np.clip(dist_ground, 1.2, 8.5))
+        dist_ground = actual_camera_height / np.tan(phi_elevation)
+        dist_ground = float(np.clip(dist_ground, 0.8, 9.0))
 
-        # 3D coordinates in room frame (Z up)
         x_pt = dist_ground * np.sin(theta_azimuth)
         y_pt = dist_ground * np.cos(theta_azimuth)
 
-        # Add floor baseboard point
         points_3d.append([x_pt, y_pt, 0.0])
-
-        # Add vertical wall column points up to ceiling height
         for z_h in np.linspace(0.4, ceiling_height_prior, 6):
             points_3d.append([x_pt, y_pt, z_h])
-
-        # Add ceiling boundary point
         points_3d.append([x_pt, y_pt, ceiling_height_prior])
 
-    # If doorway anchor prior is active, add calibrated opening constraint points
+    # Doorway anchor constraint points
     door_dist = 2.80
     door_width = 0.90
     points_3d.append([-door_width / 2.0, door_dist, 0.0])
@@ -159,63 +200,164 @@ def recover_metric_scale_and_points(
 
 
 def ingest_photo_capture(
-    photo_dir: Path | str,
-    camera_height_prior: float = 1.45,
+    photo_input: Path | str | List[Path],
+    camera_height_prior: float = CAM_HEIGHT_DEFAULT,  # FIX #4: used only as fallback
     door_height_prior: float = 2.05,
-    ceiling_height_prior: float = 2.50
+    ceiling_height_prior: float = 2.50,
+    use_registration: bool = True,   # FIX #1: toggle camera-to-camera registration
+    use_icp: bool = True,             # FIX #1: toggle ICP fine-alignment
 ) -> Tuple[np.ndarray, dict[str, Any]]:
-    """Ingest per-room photo folders, extract EXIF optics, recover scale, and produce unified 3D point cloud."""
-    dir_path = Path(photo_dir)
-    image_extensions = [".jpg", ".jpeg", ".png", ".JPG", ".JPEG", ".PNG"]
+    """Ingest per-room photo folders and produce a unified 3D point cloud.
+
+    FIX #1: Uses Essential-matrix RANSAC + ICP registration between consecutive
+            photos instead of blind np.vstack.
+    FIX #4: Estimates camera height per-image from floor-seam and horizon lines.
+    FIX #5: Detects floor-wall seam per-image via Hough/gradient/edge analysis.
+    """
+    image_extensions = {".jpg", ".jpeg", ".png"}
 
     photo_files: List[Path] = []
-    if dir_path.is_file():
-        photo_files = [dir_path]
-    elif dir_path.is_dir():
-        photo_files = sorted([p for p in dir_path.iterdir() if p.suffix in image_extensions])
+    source_str = "discovered_cluster"
+    
+    if isinstance(photo_input, list):
+        photo_files = photo_input
+    else:
+        dir_path = Path(photo_input)
+        source_str = str(dir_path)
+        if dir_path.is_file():
+            photo_files = [dir_path]
+        elif dir_path.is_dir():
+            photo_files = sorted([p for p in dir_path.iterdir() if p.suffix.lower() in image_extensions])
 
     metadata: dict[str, Any] = {
         "tier": "photo",
-        "source": str(dir_path),
+        "source": source_str,
         "photo_count": len(photo_files),
-        "scale_prior": "door_2.05m_and_cam_1.45m",
-        "pitch_rectification": "vertical_vanishing_line",
+        "scale_recovery": "adaptive_seam_and_horizon",   # FIX #4 #5
+        "registration": "essential_matrix_ransac_icp",   # FIX #1
         "uncertainty_band": "+/- 7.5%",
     }
 
     if not photo_files:
-        # Fallback to general synthetic room points if directory has no photos
         from areamap.tiers.lidar import _generate_synthetic_box
         box = _generate_synthetic_box(4.0, 3.2, 2.5, n_points=1800)
-        # Add calibrated photo-tier noise (larger sigma than LiDAR)
         noise = np.random.normal(0, 0.035, box.shape)
         return box + noise, metadata
 
-    accumulated_clouds: List[np.ndarray] = []
+    # -----------------------------------------------------------------------
+    # Initialise depth engine once for all images in this batch
+    # -----------------------------------------------------------------------
+    engine = _get_depth_engine()
+    metadata["depth_backend"] = engine.backend
+
+    # -----------------------------------------------------------------------
+    # Per-image processing
+    # -----------------------------------------------------------------------
+    all_intrinsics: List[Dict[str, float]] = []
+    all_grays: List[np.ndarray] = []
+    all_pts: List[np.ndarray] = []
+    per_image_meta: List[Dict] = []
 
     for photo_path in photo_files:
         # 1. Extract EXIF optics
         intrinsics = extract_exif_intrinsics(photo_path)
-        # 2. Determine tilt / pitch
-        pitch_rad = detect_vertical_vanishing_pitch(photo_path, intrinsics)
-        # 3. Recover metric scale & boundary coordinates
-        pts_3d = recover_metric_scale_and_points(
-            photo_path,
-            intrinsics,
-            pitch_rad=pitch_rad,
-            camera_height_prior=camera_height_prior,
-            door_height_prior=door_height_prior,
-            ceiling_height_prior=ceiling_height_prior
-        )
-        accumulated_clouds.append(pts_3d)
 
-    if not accumulated_clouds:
+        # 2. Load grayscale for seam + height detection
+        try:
+            gray = np.array(Image.open(photo_path).convert("L"), dtype=np.uint8)
+        except Exception:
+            gray = None
+
+        # 3. FIX #4 & #5 – per-image geometry estimation
+        if gray is not None:
+            geo = estimate_per_image_geometry(gray, intrinsics, ceiling_height_prior)
+            cam_height = geo["camera_height"]
+            seam_v = geo["seam_v"]
+        else:
+            cam_height = camera_height_prior
+            seam_v = None
+            geo = {"camera_height": cam_height, "seam_v": None,
+                   "seam_confidence": 0.0, "height_confidence": 0.0}
+
+        # 4. Legacy pitch detection (kept for combined correction)
+        pitch_rad = detect_vertical_vanishing_pitch(photo_path, intrinsics)
+
+        # 5. Per-image depth-backed point cloud
+        #    Try DepthEngine first (always has geometric fallback);
+        #    fall back to prior-only ray synthesis if it fails.
+        pts_3d: Optional[np.ndarray] = None
+        depth_source = "prior"
+        if gray is not None:
+            try:
+                # Load BGR for depth engine
+                bgr = cv2.cvtColor(gray, cv2.COLOR_GRAY2BGR)
+                _, pts_depth = engine.predict_and_unproject(
+                    bgr,
+                    intrinsics,
+                    camera_height=cam_height,
+                    seam_v=seam_v if seam_v is not None else (geo.get("seam_v") or (intrinsics["cy"] + 0.22 * intrinsics["height"])),
+                    ceiling_height=ceiling_height_prior,
+                    pixel_step=4,
+                )
+                if len(pts_depth) >= 50:
+                    pts_3d = pts_depth.astype(np.float64)
+                    depth_source = engine.backend
+            except Exception as _exc:
+                pts_3d = None
+
+        if pts_3d is None or len(pts_3d) < 20:
+            # Fallback: prior-only ray synthesis (fixes #4, #5 still active)
+            pts_3d = recover_metric_scale_and_points(
+                photo_path,
+                intrinsics,
+                pitch_rad=pitch_rad,
+                camera_height_prior=cam_height,
+                door_height_prior=door_height_prior,
+                ceiling_height_prior=ceiling_height_prior,
+                seam_v=seam_v,
+                gray=gray,
+            )
+            depth_source = "prior_ray"
+
+        all_intrinsics.append(intrinsics)
+        all_grays.append(gray if gray is not None else np.zeros((8, 8), dtype=np.uint8))
+        all_pts.append(pts_3d)
+        per_image_meta.append({
+            "path": str(photo_path),
+            "camera_height_m": round(cam_height, 3),
+            "seam_v": round(geo["seam_v"], 1) if geo.get("seam_v") is not None else None,
+            "seam_conf": round(geo["seam_confidence"], 3),
+            "height_conf": round(geo["height_confidence"], 3),
+            "depth_source": depth_source,
+            "points": len(pts_3d),
+        })
+
+    if not all_pts:
         from areamap.tiers.lidar import _generate_synthetic_box
         return _generate_synthetic_box(4.0, 3.2, 2.5), metadata
 
-    unified_cloud = np.vstack(accumulated_clouds)
+    # -----------------------------------------------------------------------
+    # FIX #1: Camera-to-camera registration instead of blind vstack
+    # -----------------------------------------------------------------------
+    if use_registration and len(all_pts) > 1:
+        unified_cloud, pose_log = register_photo_sequence(
+            image_paths=photo_files,
+            per_image_intrinsics=all_intrinsics,
+            per_image_point_clouds=all_pts,
+            ceiling_height_prior=ceiling_height_prior,
+            use_icp=use_icp,
+        )
+        metadata["pose_log"] = pose_log
+    else:
+        # Single image or registration disabled
+        unified_cloud = np.vstack(all_pts)
+        metadata["pose_log"] = []
 
-    # Voxel grid downsampling (5 cm voxel) to eliminate duplicate ray samples
+    if len(unified_cloud) == 0:
+        from areamap.tiers.lidar import _generate_synthetic_box
+        return _generate_synthetic_box(4.0, 3.2, 2.5), metadata
+
+    # Voxel grid downsampling (5 cm)
     voxel_size = 0.05
     discrete_coords = np.floor(unified_cloud / voxel_size).astype(np.int32)
     _, unique_indices = np.unique(discrete_coords, axis=0, return_index=True)
@@ -223,5 +365,6 @@ def ingest_photo_capture(
 
     metadata["total_points_generated"] = len(unified_cloud)
     metadata["downsampled_points"] = len(downsampled_cloud)
+    metadata["per_image"] = per_image_meta
 
     return downsampled_cloud, metadata

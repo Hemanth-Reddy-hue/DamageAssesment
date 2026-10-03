@@ -28,7 +28,9 @@ def openings_node(state: CaptureState) -> dict[str, Any]:
             walls=geom.walls,
             tier=state.tier,
             point_cloud=pts,
-            ceiling_height=ceil_h
+            ceiling_height=ceil_h,
+            capture_path=state.capture_path,
+            room_id=room_id
         )
         all_openings[room_id] = detected
         geom.openings = detected

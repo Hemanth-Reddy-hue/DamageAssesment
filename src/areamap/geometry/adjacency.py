@@ -130,44 +130,47 @@ def infer_room_adjacency(rooms: Dict[str, RoomGeometry]) -> List[AdjacencyConnec
     if len(room_ids) < 2:
         return connections
 
-    # Check for matching doors across rooms
-    for i in range(len(room_ids)):
-        r1 = room_ids[i]
-        r1_doors = [op for op in rooms[r1].openings if op.type in ["door", "passageway"]]
-        for j in range(i + 1, len(room_ids)):
-            r2 = room_ids[j]
-            r2_doors = [op for op in rooms[r2].openings if op.type in ["door", "passageway"]]
+    used_doors: set = set()
+    connected_rooms: List[str] = [room_ids[0]]
+    remaining_rooms: List[str] = list(room_ids[1:])
 
-            matched = False
-            for d1 in r1_doors:
-                for d2 in r2_doors:
-                    if abs(d1.width.value - d2.width.value) <= 0.15:
-                        connections.append(
-                            AdjacencyConnection(
-                                from_room=r1,
-                                to_room=r2,
-                                opening_id=d1.opening_id,
-                                confidence=0.95
+    # 1. Match doors using a spanning tree (ensures 1-to-1 door pairing and no self-folding cycles)
+    while remaining_rooms:
+        found_edge = False
+        for r1 in list(connected_rooms):
+            r1_doors = [op for op in rooms[r1].openings if op.type in ["door", "passageway"] and op.opening_id not in used_doors]
+            for r2 in list(remaining_rooms):
+                r2_doors = [op for op in rooms[r2].openings if op.type in ["door", "passageway"] and op.opening_id not in used_doors]
+
+                for d1 in r1_doors:
+                    for d2 in r2_doors:
+                        # Match doors with compatible widths
+                        if abs(d1.width.value - d2.width.value) <= 0.20:
+                            connections.append(
+                                AdjacencyConnection(
+                                    from_room=r1,
+                                    to_room=r2,
+                                    opening_id=f"{d1.opening_id}::{d2.opening_id}",
+                                    confidence=0.95
+                                )
                             )
-                        )
-                        matched = True
+                            used_doors.add(d1.opening_id)
+                            used_doors.add(d2.opening_id)
+                            connected_rooms.append(r2)
+                            remaining_rooms.remove(r2)
+                            found_edge = True
+                            break
+                    if found_edge:
                         break
-                if matched:
+                if found_edge:
                     break
+            if found_edge:
+                break
 
-    # If no doors matched, fall back to sequential traversal order
-    if not connections:
-        for i in range(len(room_ids) - 1):
-            r1 = room_ids[i]
-            r2 = room_ids[i + 1]
-            connections.append(
-                AdjacencyConnection(
-                    from_room=r1,
-                    to_room=r2,
-                    opening_id=f"connector_{r1}_to_{r2}",
-                    confidence=0.90
-                )
-            )
+        # Removed synthetic fallback connection as per Issue #11.
+        # If no edge found, we break to avoid infinite loop.
+        if not found_edge:
+            break
 
     return connections
 

@@ -239,17 +239,57 @@ def calculate_polygon_area(vertices: List[List[float]]) -> float:
     return abs(area) / 2.0
 
 
+def classify_rectilinear(walls: List[dict[str, Any]]) -> bool:
+    """Classify if a room's geometry conforms to a Manhattan grid (rectilinear).
+    
+    Checks the relative angles between all pairs of walls. If >85% of intersecting
+    wall angles are close to 0°, 90°, 180°, or 270°, the room is rectilinear.
+    """
+    if len(walls) < 3:
+        return True # Default to True for simple/fallback shapes
+        
+    manhattan_count = 0
+    total_pairs = 0
+    
+    for i in range(len(walls)):
+        for j in range(i + 1, len(walls)):
+            n1 = walls[i]["normal_2d"]
+            n2 = walls[j]["normal_2d"]
+            # Dot product to get angle
+            dot = np.clip(np.dot(n1, n2), -1.0, 1.0)
+            angle_deg = np.degrees(np.arccos(dot))
+            
+            # Normalize angle to [0, 90]
+            angle_deg = angle_deg % 90.0
+            if angle_deg > 45.0:
+                angle_deg = 90.0 - angle_deg
+                
+            if angle_deg <= 12.0:
+                manhattan_count += 1
+            total_pairs += 1
+            
+    if total_pairs == 0:
+        return True
+        
+    return (manhattan_count / total_pairs) >= 0.85
+
+
 def fit_room_planes(
     points: np.ndarray,
     room_id: str = "room_01",
     room_name: str = "Living Room",
-    tier: str = "lidar",
-    enforce_manhattan: bool = True
+    tier: str = "lidar"
 ) -> RoomGeometry:
     """Complete Room Geometry extraction: floor, ceiling, vertical walls, polygon, and calibrated intervals."""
     # Fallback to general bounding box if point cloud is sparse or empty
     if len(points) < 100:
         return _create_fallback_room(room_id, room_name, tier)
+
+    # Subsample dense clouds for efficient and robust RANSAC plane fitting
+    if len(points) > 30000:
+        rng = np.random.default_rng(42)
+        indices = rng.choice(len(points), 30000, replace=False)
+        points = points[indices]
 
     # 1. Extract Floor and Ceiling planes
     floor, ceiling = extract_horizontal_planes(points)
@@ -273,8 +313,15 @@ def fit_room_planes(
         residual_ceiling = 0.015
 
     # Enforce realistic ceiling height bounds
-    if ceiling_height_val < 1.8 or ceiling_height_val > 5.5:
-        ceiling_height_val = float(np.clip(ceiling_height_val, 2.4, 3.2))
+    if tier == "photo":
+        if ceiling_height_val < 2.0 or ceiling_height_val > 3.2:
+            ceiling_height_val = float(np.clip(ceiling_height_val, 2.4, 3.0))
+    elif tier == "video":
+        if ceiling is None or ceiling_height_val < 2.0 or ceiling_height_val > 2.7:
+            ceiling_height_val = 2.40
+    else:
+        if ceiling_height_val < 1.8 or ceiling_height_val > 4.5:
+            ceiling_height_val = float(np.clip(ceiling_height_val, 2.4, 3.2))
 
     # 2. Extract Vertical Wall Planes
     detected_walls = extract_vertical_wall_planes(points, floor_z, ceiling_z, max_walls=8)
@@ -344,6 +391,8 @@ def fit_room_planes(
     ceil_interval = calculate_interval(ceiling_height_val, "ceiling", tier)
     area_interval = calculate_interval(area, "area", tier)
 
+    is_rect = classify_rectilinear(detected_walls)
+
     return RoomGeometry(
         room_id=room_id,
         room_name=room_name,
@@ -351,7 +400,7 @@ def fit_room_planes(
         floor_area=area_interval,
         walls=wall_segments,
         floor_polygon=floor_poly,
-        is_rectilinear=enforce_manhattan
+        is_rectilinear=is_rect
     )
 
 

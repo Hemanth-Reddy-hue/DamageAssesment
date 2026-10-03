@@ -176,64 +176,154 @@ def recover_walkthrough_point_cloud(
 ) -> np.ndarray:
     """Synthesize metric 3D point cloud from video walkthrough keyframes.
     
-    Uses camera height prior (1.45m), door anchor (2.05m), and keyframe perspective geometry
-    to project floor boundaries, vertical wall planes, and ceiling in architectural Z-up coordinates.
+    Replaces the synthetic box fallback with true DepthEngine unprojection and 
+    sequential Essential-Matrix + ICP registration.
     """
-    rng = np.random.default_rng(random_seed)
-    w_true, l_true = room_dims_prior
-    h_ceil = ceiling_height_prior
+    from areamap.tiers.photo import _get_depth_engine
+    from areamap.geometry.registration import estimate_relative_pose_essential, icp_align
+    from areamap.tiers.photo import recover_metric_scale_and_points
+    import logging
+    logger = logging.getLogger(__name__)
 
-    points: List[np.ndarray] = []
+    has_frames = any(isinstance(kf, dict) and "frame" in kf and kf["frame"] is not None for kf in keyframes)
+    if not has_frames or len(keyframes) == 0:
+        rng = np.random.default_rng(random_seed)
+        w_true, l_true = room_dims_prior
+        h_ceil = ceiling_height_prior
 
-    # 1. Floor points at Z = 0
-    num_floor_pts = 3500
-    fx_coords = rng.uniform(0.0, w_true, num_floor_pts)
-    fy_coords = rng.uniform(0.0, l_true, num_floor_pts)
-    fz_coords = np.zeros(num_floor_pts)
-    floor_pts = np.column_stack([fx_coords, fy_coords, fz_coords])
-    points.append(floor_pts)
+        points: List[np.ndarray] = []
 
-    # 2. Ceiling points at Z = h_ceil
-    num_ceil_pts = 3500
-    cx_coords = rng.uniform(0.0, w_true, num_ceil_pts)
-    cy_coords = rng.uniform(0.0, l_true, num_ceil_pts)
-    cz_coords = np.full(num_ceil_pts, h_ceil)
-    ceil_pts = np.column_stack([cx_coords, cy_coords, cz_coords])
-    points.append(ceil_pts)
+        # 1. Floor points at Z = 0
+        num_floor_pts = 3500
+        fx_coords = rng.uniform(0.0, w_true, num_floor_pts)
+        fy_coords = rng.uniform(0.0, l_true, num_floor_pts)
+        fz_coords = np.zeros(num_floor_pts)
+        floor_pts = np.column_stack([fx_coords, fy_coords, fz_coords])
+        points.append(floor_pts)
 
-    # 3. 4 Perimeter Vertical Walls connecting floor to ceiling
-    num_wall_pts = 1800
-    # Wall 1: X in [0, w_true], Y = 0
-    w1_x = rng.uniform(0.0, w_true, num_wall_pts)
-    w1_y = np.zeros(num_wall_pts)
-    w1_z = rng.uniform(0.0, h_ceil, num_wall_pts)
-    points.append(np.column_stack([w1_x, w1_y, w1_z]))
+        # 2. Ceiling points at Z = h_ceil
+        num_ceil_pts = 3500
+        cx_coords = rng.uniform(0.0, w_true, num_ceil_pts)
+        cy_coords = rng.uniform(0.0, l_true, num_ceil_pts)
+        cz_coords = np.full(num_ceil_pts, h_ceil)
+        ceil_pts = np.column_stack([cx_coords, cy_coords, cz_coords])
+        points.append(ceil_pts)
 
-    # Wall 2: X = w_true, Y in [0, l_true]
-    w2_x = np.full(num_wall_pts, w_true)
-    w2_y = rng.uniform(0.0, l_true, num_wall_pts)
-    w2_z = rng.uniform(0.0, h_ceil, num_wall_pts)
-    points.append(np.column_stack([w2_x, w2_y, w2_z]))
+        # 3. 4 Perimeter Vertical Walls connecting floor to ceiling
+        num_wall_pts = 1800
+        # Wall 1: X in [0, w_true], Y = 0
+        w1_x = rng.uniform(0.0, w_true, num_wall_pts)
+        w1_y = np.zeros(num_wall_pts)
+        w1_z = rng.uniform(0.0, h_ceil, num_wall_pts)
+        points.append(np.column_stack([w1_x, w1_y, w1_z]))
 
-    # Wall 3: X in [0, w_true], Y = l_true
-    w3_x = rng.uniform(0.0, w_true, num_wall_pts)
-    w3_y = np.full(num_wall_pts, l_true)
-    w3_z = rng.uniform(0.0, h_ceil, num_wall_pts)
-    points.append(np.column_stack([w3_x, w3_y, w3_z]))
+        # Wall 2: X = w_true, Y in [0, l_true]
+        w2_x = np.full(num_wall_pts, w_true)
+        w2_y = rng.uniform(0.0, l_true, num_wall_pts)
+        w2_z = rng.uniform(0.0, h_ceil, num_wall_pts)
+        points.append(np.column_stack([w2_x, w2_y, w2_z]))
 
-    # Wall 4: X = 0, Y in [0, l_true]
-    w4_x = np.zeros(num_wall_pts)
-    w4_y = rng.uniform(0.0, l_true, num_wall_pts)
-    w4_z = rng.uniform(0.0, h_ceil, num_wall_pts)
-    points.append(np.column_stack([w4_x, w4_y, w4_z]))
+        # Wall 3: X in [0, w_true], Y = l_true
+        w3_x = rng.uniform(0.0, w_true, num_wall_pts)
+        w3_y = np.full(num_wall_pts, l_true)
+        w3_z = rng.uniform(0.0, h_ceil, num_wall_pts)
+        points.append(np.column_stack([w3_x, w3_y, w3_z]))
 
-    all_pts = np.vstack(points)
+        # Wall 4: X = 0, Y in [0, l_true]
+        w4_x = np.zeros(num_wall_pts)
+        w4_y = rng.uniform(0.0, l_true, num_wall_pts)
+        w4_z = rng.uniform(0.0, h_ceil, num_wall_pts)
+        points.append(np.column_stack([w4_x, w4_y, w4_z]))
 
-    # Add realistic Video Tier measurement noise (sigma ~ 1.2 cm for ~1.5 cm physical noise floor)
-    noise = rng.normal(0, 0.012, all_pts.shape)
-    scaled_pts = all_pts + noise
+        all_pts = np.vstack(points)
+        noise = rng.normal(0, 0.012, all_pts.shape)
+        return all_pts + noise
 
-    return scaled_pts
+    engine = _get_depth_engine()
+    
+    global_points = []
+    current_pose = np.eye(4)
+    prev_gray = None
+    prev_pts_3d = None
+    
+    for i, kf in enumerate(keyframes):
+        frame = kf.get("frame")
+        if frame is None:
+            continue
+        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        
+        # 1. Depth extraction
+        from areamap.geometry.scene_geometry import detect_floor_wall_seam
+        cx, cy, fy, h = intrinsics["cx"], intrinsics["cy"], intrinsics["fy"], intrinsics["height"]
+        
+        detected_seam, seam_conf = detect_floor_wall_seam(gray, cx, cy, fy)
+        if seam_conf >= 0.15:
+            seam_v = detected_seam
+        else:
+            seam_v = cy + 0.22 * h
+            
+        _, pts_depth = engine.predict_and_unproject(
+            frame, 
+            intrinsics, 
+            camera_height=camera_height_prior,
+            seam_v=seam_v,
+            ceiling_height=ceiling_height_prior,
+        )
+        
+        if len(pts_depth) >= 50:
+            pts_3d = pts_depth.astype(np.float64)
+        else:
+            # Fallback to ray intersection if depth fails
+            pts_3d = recover_metric_scale_and_points(
+                image_path="video_frame",
+                intrinsics=intrinsics,
+                pitch_rad=0.0,
+                camera_height_prior=camera_height_prior,
+                seam_v=None,
+                gray=gray
+            )
+            
+        # 2. Registration to previous frame
+        if prev_gray is not None and prev_pts_3d is not None:
+            w = int(intrinsics["width"])
+            R_rel, t_rel, conf = estimate_relative_pose_essential(prev_gray, gray, intrinsics, intrinsics, w, w)
+            T_rel = np.eye(4)
+            T_rel[:3, :3] = R_rel
+            T_rel[:3, 3] = t_rel
+            
+            if conf > 0.0:
+                # ICP fine alignment (apply T_rel first as init_transform is not supported)
+                pts_homog = np.hstack([pts_3d, np.ones((pts_3d.shape[0], 1))])
+                pts_init = (T_rel @ pts_homog.T).T[:, :3]
+                
+                T_icp, rmse = icp_align(pts_init, prev_pts_3d)
+                if rmse < 0.2:
+                    current_pose = current_pose @ (T_icp @ T_rel)
+                else:
+                    current_pose = current_pose @ T_rel
+            else:
+                # Fallback purely on odometry/heuristics if visual match fails
+                current_pose = current_pose @ T_rel
+                
+        # Transform points to global coordinate space
+        pts_homogeneous = np.hstack([pts_3d, np.ones((pts_3d.shape[0], 1))])
+        pts_global = (current_pose @ pts_homogeneous.T).T[:, :3]
+        
+        global_points.append(pts_global)
+        
+        prev_gray = gray
+        prev_pts_3d = pts_3d
+
+    if not global_points:
+        from areamap.tiers.lidar import _generate_synthetic_box
+        rng = np.random.default_rng(random_seed)
+        w_true, l_true = room_dims_prior
+        h_ceil = ceiling_height_prior
+        all_pts = _generate_synthetic_box(w_true, l_true, h_ceil)
+        noise = rng.normal(0, 0.012, all_pts.shape)
+        return all_pts + noise
+        
+    return np.vstack(global_points)
 
 def ingest_video_capture(video_path: Path | str) -> Tuple[np.ndarray, dict[str, Any]]:
     """Ingest handheld video walkthrough clip and recover scaled 3D point cloud.
@@ -270,7 +360,7 @@ def ingest_video_capture(video_path: Path | str) -> Tuple[np.ndarray, dict[str, 
         return scaled_pts, metadata
 
     # 1. Extract sharp keyframes & reject motion blur
-    keyframes, vid_meta = extract_sharp_keyframes(target_file, target_keyframes=24)
+    keyframes, vid_meta = extract_sharp_keyframes(target_file, target_keyframes=8)
 
     # 2. Camera intrinsics
     intrinsics = estimate_video_intrinsics(vid_meta["width"], vid_meta["height"])

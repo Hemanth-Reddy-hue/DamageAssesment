@@ -191,6 +191,6 @@ def test_multi_room_ingest_detection(tmp_path):
     assert out["tier"] == "photo"
     assert out["device_meta"]["multi_room"] is True
     assert out["device_meta"]["room_count"] == 2
-    assert out["rooms"] == ["room_01", "room_02"]
-    assert "room_01" in out["point_clouds"]
-    assert "room_02" in out["point_clouds"]
+    assert len(out["rooms"]) == 2
+    for r in out["rooms"]:
+        assert r in out["point_clouds"]

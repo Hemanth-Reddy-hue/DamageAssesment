@@ -23,7 +23,8 @@ def geometry_node(state: CaptureState) -> dict[str, Any]:
         if pts is None or len(pts) == 0:
             pts = _generate_synthetic_box(4.0, 3.0, 2.6)
 
-        geom = fit_room_planes(pts, room_id=room_id, tier=state.tier)
+        r_name = room_id.replace("_", " ").title()
+        geom = fit_room_planes(pts, room_id=room_id, room_name=r_name, tier=state.tier)
         room_geometry[room_id] = geom
 
     return {

@@ -106,6 +106,7 @@ class CaptureState(BaseModel):
     point_clouds: dict[str, str] = Field(default_factory=dict, description="room_id -> point cloud artifact path")
     room_geometry: dict[str, RoomGeometry] = Field(default_factory=dict)
     openings: dict[str, list[Opening]] = Field(default_factory=dict)
+    doorway_transitions: list[dict[str, Any]] = Field(default_factory=list, description="Transition edges between rooms")
     stitched_plan: StitchedPlan | None = None
     intervals: dict[str, Interval] = Field(default_factory=dict)
     damage: list[DamageRegion] = Field(default_factory=list)
