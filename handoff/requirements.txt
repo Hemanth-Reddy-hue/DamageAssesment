@@ -1,0 +1,50 @@
+# Core Orchestration and LLM Plumbing
+langgraph>=0.2.0
+langchain>=0.2.0
+langchain-core>=0.2.0
+langchain-community>=0.2.0
+langchain-anthropic>=0.1.0
+langchain-google-genai>=1.0.0
+langchain-openai>=0.1.0
+
+# State Management, Serialization, and Validation
+pydantic>=2.7.0
+pydantic-settings>=2.2.0
+python-dotenv>=1.0.1
+pyyaml>=6.0.1
+
+# Geometry, 3D, and Spatial Processing
+numpy>=1.24.0,<2.0.0
+scipy>=1.11.0
+shapely>=2.0.0
+trimesh>=4.0.0
+open3d>=0.18.0
+
+# Image, Video, and Media Processing
+opencv-python>=4.8.0
+pillow>=10.0.0
+exifread>=3.0.0
+
+# Rendering and Visualization
+matplotlib>=3.8.0
+svgwrite>=1.4.3
+
+# Deep Learning and Transformers (CPU / CUDA compatible)
+torch>=2.2.0
+torchvision>=0.17.0
+transformers>=4.40.0
+huggingface-hub>=0.23.0
+timm>=0.9.16
+
+# Tool Protocols (MCP)
+mcp>=1.0.0
+
+# Testing and Benchmarking
+pytest>=8.0.0
+pytest-cov>=4.1.0
+hypothesis>=6.100.0
+
+# Utilities and CLI
+click>=8.1.0
+requests>=2.31.0
+tqdm>=4.66.0

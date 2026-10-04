@@ -1,0 +1,192 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "CaptureState",
+  "description": "AreaMap capture schema defining dimensioned floor plan, damage findings, intervals, and repair scope.",
+  "type": "object",
+  "required": [
+    "capture_path",
+    "tier",
+    "rooms",
+    "room_geometry",
+    "openings",
+    "damage",
+    "concealed_flags",
+    "scope_items"
+  ],
+  "properties": {
+    "capture_path": { "type": "string", "description": "Path to input capture directory or file" },
+    "tier": { "type": "string", "enum": ["photo", "video", "lidar"], "description": "Capture tier" },
+    "device_meta": { "type": "object", "description": "Device metadata, EXIF, sensor details" },
+    "rooms": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "List of room IDs processed"
+    },
+    "point_clouds": {
+      "type": "object",
+      "additionalProperties": { "type": "string" },
+      "description": "Mapping from room_id to saved point cloud artifact path"
+    },
+    "room_geometry": {
+      "type": "object",
+      "additionalProperties": { "$ref": "#/$defs/RoomGeometry" }
+    },
+    "openings": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "array",
+        "items": { "$ref": "#/$defs/Opening" }
+      }
+    },
+    "stitched_plan": { "$ref": "#/$defs/StitchedPlan" },
+    "intervals": {
+      "type": "object",
+      "additionalProperties": { "$ref": "#/$defs/Interval" }
+    },
+    "damage": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/DamageRegion" }
+    },
+    "concealed_flags": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/ConcealedFlag" }
+    },
+    "scope_items": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/ScopeItem" }
+    },
+    "qa_report": { "$ref": "#/$defs/QAReport" },
+    "timings": {
+      "type": "object",
+      "additionalProperties": { "type": "number" }
+    },
+    "warnings": {
+      "type": "array",
+      "items": { "type": "string" }
+    }
+  },
+  "$defs": {
+    "Interval": {
+      "type": "object",
+      "required": ["value", "lo", "hi", "confidence_level", "method", "tier"],
+      "properties": {
+        "value": { "type": "number", "description": "Nominal metric value" },
+        "lo": { "type": "number", "description": "Lower bound of interval" },
+        "hi": { "type": "number", "description": "Upper bound of interval" },
+        "confidence_level": { "type": "number", "default": 0.90 },
+        "method": { "type": "string" },
+        "tier": { "type": "string", "enum": ["photo", "video", "lidar"] }
+      }
+    },
+    "WallSegment": {
+      "type": "object",
+      "required": ["wall_id", "start", "end", "length"],
+      "properties": {
+        "wall_id": { "type": "string" },
+        "start": { "type": "array", "items": { "type": "number" }, "minItems": 2 },
+        "end": { "type": "array", "items": { "type": "number" }, "minItems": 2 },
+        "length": { "$ref": "#/$defs/Interval" },
+        "confidence": { "type": "number", "minimum": 0, "maximum": 1 }
+      }
+    },
+    "Opening": {
+      "type": "object",
+      "required": ["opening_id", "wall_id", "type", "width", "height"],
+      "properties": {
+        "opening_id": { "type": "string" },
+        "wall_id": { "type": "string" },
+        "type": { "type": "string", "enum": ["door", "window", "passageway"] },
+        "width": { "$ref": "#/$defs/Interval" },
+        "height": { "$ref": "#/$defs/Interval" },
+        "sill_height": { "$ref": "#/$defs/Interval" },
+        "position": { "type": "array", "items": { "type": "number" } },
+        "confidence": { "type": "number", "minimum": 0, "maximum": 1 }
+      }
+    },
+    "RoomGeometry": {
+      "type": "object",
+      "required": ["room_id", "room_name", "ceiling_height", "floor_area", "walls", "floor_polygon"],
+      "properties": {
+        "room_id": { "type": "string" },
+        "room_name": { "type": "string" },
+        "ceiling_height": { "$ref": "#/$defs/Interval" },
+        "floor_area": { "$ref": "#/$defs/Interval" },
+        "walls": { "type": "array", "items": { "$ref": "#/$defs/WallSegment" } },
+        "floor_polygon": { "type": "array", "items": { "type": "array", "items": { "type": "number" } } },
+        "openings": { "type": "array", "items": { "$ref": "#/$defs/Opening" } },
+        "is_rectilinear": { "type": "boolean" },
+        "transform_to_plan": { "type": "array" }
+      }
+    },
+    "DamageRegion": {
+      "type": "object",
+      "required": ["damage_id", "surface_id", "damage_class", "severity", "extent_metric"],
+      "properties": {
+        "damage_id": { "type": "string" },
+        "surface_id": { "type": "string" },
+        "damage_class": { "type": "string" },
+        "severity": { "type": "string", "enum": ["minor", "moderate", "severe"] },
+        "extent_metric": { "$ref": "#/$defs/Interval" },
+        "bounding_box_2d": { "type": "array", "items": { "type": "number" } },
+        "confidence": { "type": "number", "minimum": 0, "maximum": 1 },
+        "notes": { "type": "string" }
+      }
+    },
+    "ConcealedFlag": {
+      "type": "object",
+      "required": ["flag_id", "rule_id", "description", "trigger_evidence", "recommended_action"],
+      "properties": {
+        "flag_id": { "type": "string" },
+        "rule_id": { "type": "string" },
+        "description": { "type": "string" },
+        "trigger_evidence": { "type": "array", "items": { "type": "string" } },
+        "recommended_action": { "type": "string" }
+      }
+    },
+    "ScopeItem": {
+      "type": "object",
+      "required": ["item_id", "surface_id", "item_description", "unit", "quantity"],
+      "properties": {
+        "item_id": { "type": "string" },
+        "surface_id": { "type": "string" },
+        "damage_id": { "type": "string" },
+        "item_description": { "type": "string" },
+        "unit": { "type": "string" },
+        "quantity": { "$ref": "#/$defs/Interval" },
+        "unit_cost_est": { "type": "number" },
+        "rationale": { "type": "string" }
+      }
+    },
+    "AdjacencyConnection": {
+      "type": "object",
+      "required": ["from_room", "to_room", "opening_id"],
+      "properties": {
+        "from_room": { "type": "string" },
+        "to_room": { "type": "string" },
+        "opening_id": { "type": "string" },
+        "confidence": { "type": "number" }
+      }
+    },
+    "StitchedPlan": {
+      "type": "object",
+      "required": ["rooms", "connections", "total_footprint_area", "footprint_polygon"],
+      "properties": {
+        "rooms": { "type": "array", "items": { "type": "string" } },
+        "connections": { "type": "array", "items": { "$ref": "#/$defs/AdjacencyConnection" } },
+        "total_footprint_area": { "$ref": "#/$defs/Interval" },
+        "footprint_polygon": { "type": "array", "items": { "type": "array", "items": { "type": "number" } } },
+        "drift_correction_applied": { "type": "boolean" }
+      }
+    },
+    "QAReport": {
+      "type": "object",
+      "properties": {
+        "passed": { "type": "boolean" },
+        "checks_run": { "type": "array", "items": { "type": "string" } },
+        "failed_checks": { "type": "array", "items": { "type": "string" } },
+        "adjustments_made": { "type": "array", "items": { "type": "string" } },
+        "overall_confidence": { "type": "number" }
+      }
+    }
+  }
+}

@@ -1,0 +1,47 @@
+# Deterministic Concealed Damage Detection Rules
+rules:
+  - id: "RULE_CEIL_WET_01"
+    name: "Ceiling water stain below potential wet area"
+    description: "Water stain detected on ceiling directly below a wet area (bathroom/kitchen/roof), indicating active or historical hidden plumbing/roof leak."
+    conditions:
+      surface_type: "ceiling"
+      damage_class: "water_stain"
+    trigger_evidence:
+      - "Water stain detected on ceiling plane"
+      - "Vertical proximity to overhead plumbing or exterior roof envelope"
+    recommended_action: "Perform thermal imaging and moisture meter pin probe of ceiling drywall cavity."
+
+  - id: "RULE_BASEBOARD_SWELL_02"
+    name: "Baseboard swelling with wall moisture staining"
+    description: "Lower wall water staining or swelling adjacent to baseboards indicating subfloor water migration or hidden pipe intrusion."
+    conditions:
+      surface_type: "wall"
+      damage_class: "water_stain"
+      proximity_to_floor: 0.30  # within 30cm of floor
+    trigger_evidence:
+      - "Lower wall moisture discoloration within 30cm of floor plane"
+      - "High risk of baseboard rot and concealed framing fungal growth"
+    recommended_action: "Remove section of baseboard and inspect sill plate and bottom plate with bore scope."
+
+  - id: "RULE_SHEAR_CRACK_03"
+    name: "Diagonal opening corner crack indicating structural settlement"
+    description: "Diagonal crack propagating from door or window header indicating concealed framing shift or foundation settlement."
+    conditions:
+      surface_type: "wall"
+      damage_class: "crack"
+      near_opening: true
+    trigger_evidence:
+      - "Crack origin within 20cm of door/window opening corner"
+      - "Diagonal propagation angle typical of structural racking"
+    recommended_action: "Inspect foundation perimeter and header framing integrity; install crack movement monitor."
+
+  - id: "RULE_MOLD_OUTLET_04"
+    name: "Mold / moisture near electrical outlet or switch"
+    description: "Moisture or mold growth within 20cm of electrical boxes indicating draft condensation or in-wall leak risk."
+    conditions:
+      surface_type: "wall"
+      damage_class: "mold"
+      near_electrical: true
+    trigger_evidence:
+      - "Mold colony within 20cm of electrical junction box"
+    recommended_action: "De-energize circuit, pull faceplate, check inside junction box for corrosion and moisture."

@@ -1,0 +1,57 @@
+[build-system]
+requires = ["setuptools>=65.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "areamap"
+version = "0.1.0"
+description = "iPhone Capture to Dimensioned Floor Plan, Damage Findings and Repair Scope"
+readme = "README.md"
+requires-python = ">=3.11"
+authors = [
+    { name = "AreaMap Team" }
+]
+dependencies = [
+    "langgraph>=0.2.0",
+    "langchain>=0.2.0",
+    "langchain-core>=0.2.0",
+    "pydantic>=2.7.0",
+    "pydantic-settings>=2.2.0",
+    "python-dotenv>=1.0.1",
+    "pyyaml>=6.0.1",
+    "numpy>=1.24.0,<2.0.0",
+    "scipy>=1.11.0",
+    "shapely>=2.0.0",
+    "trimesh>=4.0.0",
+    "open3d>=0.18.0",
+    "opencv-python>=4.8.0",
+    "pillow>=10.0.0",
+    "exifread>=3.0.0",
+    "matplotlib>=3.8.0",
+    "svgwrite>=1.4.3",
+    "torch>=2.2.0",
+    "torchvision>=0.17.0",
+    "transformers>=4.40.0",
+    "huggingface-hub>=0.23.0",
+    "mcp>=1.0.0",
+    "click>=8.1.0",
+    "requests>=2.31.0",
+    "tqdm>=4.66.0"
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0.0",
+    "pytest-cov>=4.1.0",
+    "hypothesis>=6.100.0"
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+pythonpath = ["src"]
