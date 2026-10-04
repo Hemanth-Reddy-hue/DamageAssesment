@@ -1,0 +1,18 @@
+{
+  "floor_only": {
+    "hi": 3.0,
+    "lo": 2.2,
+    "method": "prior",
+    "value": 2.6,
+    "warned": true,
+    "width": 0.8
+  },
+  "with_ceiling": {
+    "hi": 3.0,
+    "lo": 2.2,
+    "method": "prior",
+    "value": 2.6,
+    "warned": true,
+    "width": 0.8
+  }
+}

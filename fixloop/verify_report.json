@@ -1,0 +1,13 @@
+{
+  "checks": {
+    "before had conformal 2.4": true,
+    "floor_only prior": true,
+    "floor_only width": true,
+    "with_ceiling method": false,
+    "with_ceiling width": false
+  },
+  "detail": "declaration ffb697b precedes fix 8dc570a: True; diff.patch non-empty: True; floor_only prior=ok, floor_only width=ok, with_ceiling method=MISSED, with_ceiling width=MISSED, before had conformal 2.4=ok",
+  "n": 7,
+  "order_ok": true,
+  "status": "PASS"
+}
