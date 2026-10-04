@@ -85,6 +85,26 @@ def resolve_output_dir(capture_path: str, output_dir: Optional[str] = None) -> s
     return str(Path(output_dir))
 
 
+def _run_node(label, node_fn, state, failures):
+    try:
+        updates = node_fn(state)
+    except Exception as exc:  # partial-result policy (M15)
+        msg = f"NODE_FAILED {label}: {type(exc).__name__}: {str(exc)[:200]}"
+        state.warnings.append(msg)
+        failures.append(msg)
+        return False
+    if updates and isinstance(updates, dict):
+        for k, v in updates.items():
+            setattr(state, k, v)
+    return True
+
+
+def _write_emergency_plan(state, out_dir):
+    p = Path(out_dir)
+    p.mkdir(parents=True, exist_ok=True)
+    (p / "plan.json").write_text(state.model_dump_json(indent=2), encoding="utf-8")
+
+
 def run_pipeline(
     capture_path: str,
     tier: str = "auto",
@@ -145,41 +165,41 @@ def run_pipeline(
     )
 
     steps = [
-        ("[1/8] Ingestion & Tier Router", ingest_node),
-        ("[2/8] RANSAC Room Geometry & Planes", geometry_node),
-        ("[3/8] Opening Cutouts & Phantom Suppression", openings_node),
-        ("[4/8] Multi-Room Alignment & Stitching", stitch_node),
-        ("[5/8] Calibrated Conformal Intervals", calibrate_node),
-        ("[6/8] Damage Proposals & Semantic Overlay", damage_node),
-        ("[7/8] Forensic Rules & Repair Scope", concealed_node),
-        ("[8/8] QA Critic & Vector Plan Export", export_node),
+        ("[1/9] Ingestion & Tier Router", ingest_node),
+        ("[2/9] RANSAC Room Geometry & Planes", geometry_node),
+        ("[3/9] Opening Cutouts & Phantom Suppression", openings_node),
+        ("[4/9] Multi-Room Alignment & Stitching", stitch_node),
+        ("[5/9] Interval Calibration", calibrate_node),
+        ("[6/9] Damage Proposals", damage_node),
+        ("[7/9] Forensic Rules", concealed_node),
+        ("[8/9] Repair Scope", scope_node),
+        ("[9/9] QA Critic", qa_critic_node),
     ]
-
+    failures: list[str] = []
     for label, node_fn in steps:
         print(f"  -> {label}...", end="", flush=True)
-        updates = node_fn(state)
-        if updates and isinstance(updates, dict):
-            for k, v in updates.items():
-                setattr(state, k, v)
-        print(" [DONE]")
+        ok = _run_node(label, node_fn, state, failures)
+        print(" [DONE]" if ok else " [FAILED]")
 
-    # Additional scope and QA critic nodes
-    scope_updates = scope_node(state)
-    if scope_updates:
-        for k, v in scope_updates.items():
-            setattr(state, k, v)
+    if failures:
+        from areamap.state import QAReport
+        prior = state.qa_report
+        state.qa_report = QAReport(
+            passed=False,
+            checks_run=prior.checks_run if prior else [],
+            failed_checks=failures + (prior.failed_checks if prior else []),
+            overall_confidence=0.0,
+        )
 
-    qa_updates = qa_critic_node(state)
-    if qa_updates:
-        for k, v in qa_updates.items():
-            setattr(state, k, v)
+    def _export(s):
+        return export_node(s, output_dir=resolved_output_dir)
+    if not _run_node("export", _export, state, failures):
+        _write_emergency_plan(state, resolved_output_dir)
 
-    # Finalize vector SVG and plan.json export
-    export_node(state, output_dir=resolved_output_dir)
-
-    print("-" * 80)
-    print("[AreaMap] Pipeline execution completed successfully!\n")
-    _print_summary(state, resolved_output_dir)
+    try:
+        _print_summary(state, resolved_output_dir)
+    except Exception as exc:
+        print(f"[AreaMap] summary skipped: {exc}")
     return state.model_dump()
 
 
@@ -337,7 +357,7 @@ def main():
             print("\nExiting. Use 'python main.py --help' for usage options.")
             return
 
-    run_pipeline(
+    res = run_pipeline(
         capture_path=target_path,
         tier=args.tier,
         output_dir=args.out,
@@ -348,6 +368,8 @@ def main():
         rooms_json=args.rooms_json,
         allow_synthetic=args.allow_synthetic,
     )
+    if any(w.startswith("NODE_FAILED") for w in res.get("warnings", [])):
+        sys.exit(2)
 
 
 if __name__ == "__main__":

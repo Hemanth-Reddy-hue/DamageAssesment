@@ -22,7 +22,7 @@ def calculate_interval(
     tier: str = "lidar",
     quality_factor: float = 1.0,
     confidence_level: float = 0.90,
-    method: str = "conformal"
+    method: str = "tier_prior"
 ) -> Interval:
     """Calculate calibrated confidence interval adhering to sensor physical floors and tier ordering."""
     base_floor = PHYSICAL_NOISE_FLOORS.get(tier, 0.01)

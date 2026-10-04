@@ -4,7 +4,7 @@ import time
 import logging
 from pathlib import Path
 from typing import Any
-from areamap.state import CaptureState, DamageRegion
+from areamap.state import CaptureState, DamageRegion, Interval
 from areamap.geometry.uncertainty import calculate_interval
 from areamap.llm.client import get_llm_client
 
@@ -66,6 +66,42 @@ def _find_representative_image(capture_path: str) -> Path | None:
     return None
 
 
+def _resolve_surface_id(surface: str, state: CaptureState) -> tuple[str | None, str]:
+    """Return (surface_id, note). Wall damage cannot be tied to a specific wall from one image."""
+    s = (surface or "").lower()
+    if "ceil" in s:
+        return "ceiling", ""
+    if "floor" in s:
+        return "floor", ""
+    geom = None
+    for rid in state.rooms:
+        geom = state.room_geometry.get(rid)
+        if geom:
+            break
+    if geom is None and state.room_geometry:
+        geom = next(iter(state.room_geometry.values()))
+    if geom and geom.walls:
+        return geom.walls[0].wall_id, (
+            f"wall not localized from a single image; assigned to {geom.walls[0].wall_id}")
+    return None, "no wall geometry available to bind damage to"
+
+
+def _clean_bbox(bb) -> tuple[list[float] | None, bool, str]:
+    """Return (bbox, whole_image_fallback, note). bbox must be [ymin,xmin,ymax,xmax] in [0,1]."""
+    try:
+        v = [float(x) for x in bb]
+    except (TypeError, ValueError):
+        return None, False, "bbox missing"
+    if len(v) != 4 or any(x < 0.0 or x > 1.0 for x in v):
+        return None, False, "bbox invalid (not normalized [0,1])"
+    ymin, xmin, ymax, xmax = v
+    if ymax <= ymin or xmax <= xmin:
+        return None, False, "bbox degenerate"
+    if (ymax - ymin) * (xmax - xmin) > 0.95:
+        return v, True, "whole_image_fallback: bbox covers >95% of image"
+    return v, False, ""
+
+
 def damage_node(state: CaptureState) -> dict[str, Any]:
     """Detect and measure surface damage regions using the VLM on real image data."""
     t0 = time.time()
@@ -88,7 +124,9 @@ def damage_node(state: CaptureState) -> dict[str, Any]:
                     "properties": {
                         "damage_class": {"type": "string", "enum": ["water_stain", "mold", "crack", "spalling", "efflorescence", "none"]},
                         "severity": {"type": "string", "enum": ["none", "minor", "moderate", "severe"]},
-                        "bounding_box_2d": {"type": "array", "items": {"type": "number"}},
+                        "bounding_box_2d": {"type": "array", "items": {"type": "number", "minimum": 0, "maximum": 1},
+                                            "minItems": 4, "maxItems": 4,
+                                            "description": "[ymin, xmin, ymax, xmax] normalized to 0..1"},
                         "estimated_extent_m2": {"type": "number"},
                         "surface": {"type": "string", "description": "e.g. ceiling, wall, floor"},
                         "notes": {"type": "string"}
@@ -101,11 +139,12 @@ def damage_node(state: CaptureState) -> dict[str, Any]:
 
     prompt = (
         "You are a professional property damage assessor. "
-        "Carefully inspect the provided image for any visible surface damage including "
-        "water stains, mold, cracks, spalling, or structural issues. "
-        "If the image shows no damage, return an empty damage_findings array. "
-        "Be accurate — do NOT fabricate findings. "
-        "For each real finding, estimate its area in m^2 and the affected surface (ceiling/wall/floor)."
+        "Inspect the image for visible surface damage: water stains, mold, cracks, spalling, efflorescence. "
+        "If there is no damage, return an empty damage_findings array. Do NOT fabricate findings. "
+        "For each real finding give: damage_class, severity (minor|moderate|severe), "
+        "surface (ceiling|wall|floor), and bounding_box_2d as [ymin, xmin, ymax, xmax] with every value "
+        "normalized to the range 0..1 relative to the image (never pixels, never the whole image unless "
+        "the damage truly fills it). Also give estimated_extent_m2 only if you can justify it; otherwise omit it."
     )
 
     res = client.generate_structured(prompt=prompt, image_path=rep_image, schema=schema)
@@ -126,28 +165,44 @@ def damage_node(state: CaptureState) -> dict[str, Any]:
         d_class = item.get("damage_class", "water_stain")
         if d_class == "none":
             continue
-        extent_m2 = item.get("estimated_extent_m2", 0.75)
-        d_id = f"dmg_{d_class}_{i+1:02d}"
-        
-        surface = item.get("surface", "ceiling" if d_class == "water_stain" else "wall")
-        # Map to room wall ID if applicable
-        if "wall" in surface.lower():
-            surface_id = "room_01_w1"
-        else:
-            surface_id = surface
+        severity = item.get("severity")
+        if severity not in ("minor", "moderate", "severe"):
+            severity = "minor"
 
-        damage_regions.append(
-            DamageRegion(
-                damage_id=d_id,
-                surface_id=surface_id,
-                damage_class=d_class,
-                severity=item.get("severity", "moderate"),
-                extent_metric=calculate_interval(extent_m2, "damage_area", tier=state.tier),
-                bounding_box_2d=item.get("bounding_box_2d"),
-                confidence=0.90,
-                notes=item.get("notes", "")
-            )
-        )
+        surface = item.get("surface") or ("ceiling" if d_class == "water_stain" else "wall")
+        surface_id, sid_note = _resolve_surface_id(surface, state)
+        if surface_id is None:
+            state.warnings.append(f"Damage {d_class} #{i+1} dropped: {sid_note}")
+            continue
+
+        bbox, whole, bbox_note = _clean_bbox(item.get("bounding_box_2d"))
+
+        # The extent is a VLM estimate, not a measurement: wide band, labeled as such.
+        raw_extent = item.get("estimated_extent_m2")
+        notes = [n for n in (item.get("notes", ""), sid_note, bbox_note) if n]
+        confidence = 0.6
+        if isinstance(raw_extent, (int, float)) and raw_extent > 0:
+            v = float(raw_extent)
+            half = 0.5 if not whole else 1.0
+            lo, hi = max(0.0, v * (1 - min(half, 0.9))), v * (1 + half)
+        else:
+            v, lo, hi = 0.5, 0.1, 2.0
+            confidence = 0.3
+            notes.append("extent not provided by VLM; wide placeholder band, not a measurement")
+        if whole:
+            confidence = min(confidence, 0.3)
+
+        damage_regions.append(DamageRegion(
+            damage_id=f"dmg_{d_class}_{i+1:02d}",
+            surface_id=surface_id,
+            damage_class=d_class,
+            severity=severity,
+            extent_metric=Interval(value=round(v, 4), lo=round(lo, 4), hi=round(hi, 4),
+                                   confidence_level=0.90, method="vlm_estimate", tier=state.tier or "lidar"),
+            bounding_box_2d=bbox,
+            confidence=confidence,
+            notes="; ".join(notes),
+        ))
 
     return {
         "damage": damage_regions,
