@@ -20,12 +20,20 @@ def geometry_node(state: CaptureState) -> dict[str, Any]:
 
     for room_id in state.rooms or ["room_01"]:
         pts = None
+        cams = None
         cloud_ref = state.point_clouds.get(room_id)
         if cloud_ref and Path(cloud_ref).exists():
             try:
                 pts = np.load(cloud_ref)
             except Exception:
                 pts = None
+                
+        cam_ref = state.camera_positions.get(room_id)
+        if cam_ref and Path(cam_ref).exists():
+            try:
+                cams = np.load(cam_ref)
+            except Exception:
+                cams = None
 
         synthetic_used = False
         if pts is None or len(pts) == 0:
@@ -44,6 +52,7 @@ def geometry_node(state: CaptureState) -> dict[str, Any]:
             room_id=room_id,
             room_name=r_name,
             tier=state.tier or "lidar",
+            camera_positions=cams,
             scale_relative_uncertainty=scale_uncertainty,
         )
         if synthetic_used:

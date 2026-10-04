@@ -10,8 +10,6 @@ import logging
 
 logger = logging.getLogger(__name__)
 
-CEILING_PRIOR_M = 2.60
-CEILING_PRIOR_HALF_WIDTH_M = 0.40      # plausibility band for residential ceilings, not a statistical interval
 CEILING_MIN_M, CEILING_MAX_M = 2.0, 4.5
 
 
@@ -147,14 +145,14 @@ def extract_horizontal_planes(
             break
 
     if not horizontal_planes:
-        return None, None
+        return None, None, []
 
     # Sort horizontal planes by vertical height z_mean
     horizontal_planes.sort(key=lambda p: p["z_mean"])
     floor = horizontal_planes[0]
     ceiling = horizontal_planes[-1] if len(horizontal_planes) > 1 else None
 
-    return floor, ceiling
+    return floor, ceiling, horizontal_planes
 
 
 def extract_vertical_wall_planes(
@@ -221,6 +219,7 @@ def extract_vertical_wall_planes(
                         "normal_2d": n_2d,
                         "d_2d": d_2d,
                         "inliers_2d": inlier_pts[:, :2],
+                        "inliers_3d": inlier_pts,
                         "residual_std": residual_std,
                         "count": len(inliers)
                     })
@@ -316,54 +315,141 @@ def fit_room_planes(
         points = points[indices]
 
     # 1. Extract Floor and Ceiling planes
-    floor, ceiling = extract_horizontal_planes(points, seed=seed)
+    floor, ceiling, all_h_planes = extract_horizontal_planes(points, seed=seed)
+    
+    # 2. Extract Vertical Wall Planes (we need this early for wall-top fallback)
+    floor_z_est = floor["z_mean"] if floor else 0.0
+    ceil_z_est = ceiling["z_mean"] if ceiling else 2.6
+    detected_walls = extract_vertical_wall_planes(points, floor_z_est, ceil_z_est, max_walls=8, seed=seed)
 
-    # Validate against camera heights if available
+    # Validate against camera heights and select correct floor
+    med_cam_z = None
     if camera_positions is not None and len(camera_positions) > 0:
         cam_zs = camera_positions[:, 2]
         med_cam_z = float(np.median(cam_zs))
+        
+        # Find the best floor plane that is between 1.0 and 2.0 meters below the cameras
+        best_floor = None
+        best_cam_h = None
+        for p in all_h_planes:
+            cam_h = med_cam_z - p["z_mean"]
+            if 1.0 <= cam_h <= 2.0:
+                if best_floor is None or abs(cam_h - 1.5) < abs(best_cam_h - 1.5):
+                    best_floor = p
+                    best_cam_h = cam_h
+        
+        if best_floor is not None:
+            floor = best_floor
+
+    # === CEILING DIAGNOSTICS ===
+    if camera_positions is not None and len(camera_positions) > 0 and floor is not None:
+        med_cam_z = float(np.median(camera_positions[:, 2]))
+        cam_h = med_cam_z - floor["z_mean"]
+        print(f"\n[DIAGNOSTICS] Camera height above floor plane: {cam_h:.3f} m")
+        
+        floor_norm = floor["normal"]
+        angle = np.arccos(abs(floor_norm[2])) * 180.0 / np.pi
+        print(f"[DIAGNOSTICS] Floor-plane normal vs up-vector angle: {angle:.3f} deg")
+        print(f"[DIAGNOSTICS] Floor inliers: {floor['inlier_count']}")
+        
+        if ceiling is not None:
+            print(f"[DIAGNOSTICS] Ceiling inliers: {ceiling['inlier_count']}")
+        
+        hist, _ = np.histogram(points[:, 2], bins=15)
+        print(f"[DIAGNOSTICS] Z-histogram: {hist.tolist()}\n")
+    # ===========================
+
+    # Validate against camera heights if available
+    if med_cam_z is not None:
         if floor is not None:
-            # Floor must be below cameras
             cam_h = med_cam_z - floor["z_mean"]
             if cam_h < 0.6 or cam_h > 2.5:
                 floor = None
         if ceiling is not None:
-            # Ceiling must be above cameras
             ceil_dist = ceiling["z_mean"] - med_cam_z
-            if ceil_dist < 0.4:
+            if ceil_dist < 0.2:
                 ceiling = None
 
-    # Ceiling is "measured" only if a floor AND a ceiling plane were observed and plausible.
+    # Strict Ceiling Verification
+    if ceiling is not None:
+        # Require normal within 5 degrees of +Z
+        if abs(ceiling["normal"][2]) < 0.996:
+            ceiling = None
+
+    # Plausibility Gate & Fallback Chain
     ceiling_method = "measured"
+    fallback_fired = ""
+
+    def is_plausible(h):
+        return 2.4 <= h <= 3.6
+
+    ceiling_height_val = None
+    floor_z = 0.0
+    ceiling_z = 2.6
+
     if floor is not None and ceiling is not None:
+        cand_h = ceiling["z_mean"] - floor["z_mean"]
+        if is_plausible(cand_h):
+            ceiling_height_val = cand_h
+            floor_z = floor["z_mean"]
+            ceiling_z = ceiling["z_mean"]
+        else:
+            fallback_fired = f"ceiling_plane_rejected_{cand_h:.2f}"
+            ceiling = None  # force fallback
+
+    if ceiling_height_val is None and floor is not None:
         floor_z = floor["z_mean"]
-        ceiling_z = ceiling["z_mean"]
-        ceiling_height_val = float(ceiling_z - floor_z)
-        if not (CEILING_MIN_M <= ceiling_height_val <= CEILING_MAX_M):
-            logger.warning(
-                "Ceiling candidate %.2f m outside [%.1f, %.1f]; using prior", 
-                ceiling_height_val, CEILING_MIN_M, CEILING_MAX_M,
-            )
-            ceiling_method = "prior"
-            ceiling_height_val = CEILING_PRIOR_M
-    elif floor is not None:
-        floor_z = floor["z_mean"]
-        z_high = float(np.percentile(points[:, 2], 95))
-        ceiling_z = z_high                       # used only to bound wall extraction
-        ceiling_height_val = CEILING_PRIOR_M
-        ceiling_method = "prior"
-    else:
-        z_min, z_max = np.percentile(points[:, 2], [5, 95])
-        floor_z, ceiling_z = float(z_min), float(z_max)
-        ceiling_height_val = CEILING_PRIOR_M
-        ceiling_method = "prior"
+        # Fallback 1: wall-top percentile of wall inliers
+        ref_cam_z = med_cam_z if med_cam_z is not None else floor_z + 1.5
+        wall_pts = []
+        for w in detected_walls:
+            wall_pts.append(w["inliers_3d"])
+
+        if len(wall_pts) > 0:
+            wall_pts_arr = np.vstack(wall_pts)
+            upper_pts = wall_pts_arr[wall_pts_arr[:, 2] > ref_cam_z]
+            if len(upper_pts) > 50:
+                z_high = float(np.percentile(upper_pts[:, 2], 96))
+                cand_h = z_high - floor_z
+                if is_plausible(cand_h):
+                    ceiling_height_val = cand_h
+                    ceiling_z = z_high
+                    ceiling_method = "wall_top_percentile"
+                    print(f"[DIAGNOSTICS] Ceiling from wall-top percentile: {cand_h:.2f}m")
+                else:
+                    fallback_fired += f"|wall_top_rejected_{cand_h:.2f}"
+
+        # Fallback 2: upper percentile of all points above camera
+        if ceiling_height_val is None:
+            upper_all = points[points[:, 2] > ref_cam_z] if med_cam_z is not None else points
+            if len(upper_all) > 20:
+                z_high = float(np.percentile(upper_all[:, 2], 90))
+                cand_h = z_high - floor_z
+                if cand_h > 0.5:  # Any positive height is accepted as a measurement
+                    ceiling_height_val = cand_h
+                    ceiling_z = z_high
+                    ceiling_method = "cloud_upper_percentile"
+                    print(f"[DIAGNOSTICS] Ceiling from cloud upper percentile: {cand_h:.2f}m "
+                          f"(History: {fallback_fired})")
+
+        if ceiling_height_val is None:
+            # Last resort: use 90th-5th percentile spread of entire cloud
+            z_lo, z_hi = float(np.percentile(points[:, 2], 5)), float(np.percentile(points[:, 2], 90))
+            ceiling_height_val = z_hi - floor_z
+            ceiling_z = z_hi
+            ceiling_method = "cloud_spread"
+            print(f"[DIAGNOSTICS] Ceiling from cloud spread (last resort): {ceiling_height_val:.2f}m")
+
+    elif floor is None:
+        # No floor plane: estimate from cloud extremes
+        z_lo, z_hi = float(np.percentile(points[:, 2], 5)), float(np.percentile(points[:, 2], 90))
+        floor_z, ceiling_z = z_lo, z_hi
+        ceiling_height_val = ceiling_z - floor_z
+        ceiling_method = "cloud_spread"
 
     if tier == "photo":
         # Photo clouds are synthesized at the prior ceiling height: not an observation.
         ceiling_method = "prior"
-
-    # 2. Extract Vertical Wall Planes
-    detected_walls = extract_vertical_wall_planes(points, floor_z, ceiling_z, max_walls=8, seed=seed)
 
     provenance = "measured"
     if len(detected_walls) < 3:
@@ -468,8 +554,8 @@ def fit_room_planes(
     if ceiling_method == "prior":
         ceil_interval = Interval(
             value=round(ceiling_height_val, 4),
-            lo=round(ceiling_height_val - CEILING_PRIOR_HALF_WIDTH_M, 4),
-            hi=round(ceiling_height_val + CEILING_PRIOR_HALF_WIDTH_M, 4),
+            lo=round(ceiling_height_val - 0.40, 4),
+            hi=round(ceiling_height_val + 0.40, 4),
             confidence_level=0.90,
             method="prior",
             tier=tier,

@@ -24,7 +24,7 @@ class AreaMapConfig(BaseModel):
     llm_provider: str = Field(default_factory=lambda: os.getenv("LLM_PROVIDER", "local"))
     anthropic_api_key: str | None = Field(default_factory=lambda: os.getenv("ANTHROPIC_API_KEY"))
     gemini_api_key: str | None = Field(default_factory=lambda: os.getenv("GEMINI_API_KEY"))
-    gemini_model_name: str = Field(default_factory=lambda: os.getenv("GEMINI_MODEL_NAME", "gemini-1.5-flash"))
+    gemini_model_name: str = Field(default_factory=lambda: os.getenv("GEMINI_MODEL_NAME", "gemini-2.5-flash"))
     openai_api_key: str | None = Field(default_factory=lambda: os.getenv("OPENAI_API_KEY"))
 
     # --- Cloud LLM Provider keys & models (WP1 / WP2) ---
@@ -43,7 +43,7 @@ class AreaMapConfig(BaseModel):
     llm_model_groq: str = Field(default_factory=lambda: os.getenv("LLM_MODEL_GROQ", "llama-3.2-11b-vision-preview"))
     llm_model_ollama: str = Field(default_factory=lambda: os.getenv("LLM_MODEL_OLLAMA", "llava"))
     llm_model_openrouter: str = Field(default_factory=lambda: os.getenv("LLM_MODEL_OPENROUTER", "google/gemini-2.0-flash-exp:free"))
-    llm_model_gemini: str = Field(default_factory=lambda: os.getenv("LLM_MODEL_GEMINI", "gemini-1.5-flash"))
+    llm_model_gemini: str = Field(default_factory=lambda: os.getenv("LLM_MODEL_GEMINI", "gemini-2.5-flash"))
 
     llm_rpm_mistral: int = Field(default_factory=lambda: int(os.getenv("LLM_RPM_MISTRAL", "50")))
     llm_rpm_groq: int = Field(default_factory=lambda: int(os.getenv("LLM_RPM_GROQ", "30")))

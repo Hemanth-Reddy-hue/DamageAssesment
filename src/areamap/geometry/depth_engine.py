@@ -43,10 +43,24 @@ import numpy as np
 
 log = logging.getLogger(__name__)
 
+
+def _is_offline() -> bool:
+    """Check the offline flag from settings (loaded from .env).
+    
+    Uses the config system so .env is always respected.
+    Falls back to the OFFLINE env var if settings can't be imported.
+    """
+    try:
+        from areamap.config import settings
+        return settings.offline
+    except Exception:
+        # Fallback: check env var. Default to FALSE so models load if not explicitly blocked.
+        return os.environ.get("OFFLINE", "0").lower() in ("1", "true", "yes")
+
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
-_DEPTH_ANYTHING_V2_HF_ID = "depth-anything/Depth-Anything-V2-Small-hf"
+_DEPTH_ANYTHING_V2_HF_ID = "depth-anything/Depth-Anything-V2-Metric-Indoor-Small-hf"
 _MIDAS_ONNX_URL = (
     "https://github.com/isl-org/MiDaS/releases/download/v3_1/"
     "dpt_swin2_tiny_256.onnx"
@@ -68,47 +82,83 @@ METRIC_INDOOR_MAX_M = 10.00
 # ---------------------------------------------------------------------------
 
 def _try_load_depth_anything_v2(device: str = "cpu"):
-    """Attempt to load Depth Anything V2 from HuggingFace.
+    """Attempt to load Depth-Anything-V2-Metric-Indoor from HuggingFace cache.
 
-    Returns (pipeline_fn, 'depth_anything') or (None, None) on failure.
+    This is a METRIC model: its output is already in meters, no rescaling needed.
+    It loads from local cache if available (no internet required once downloaded).
+
+    Returns (pipeline_fn, 'depth_anything_v2') or (None, None) on failure.
     """
     try:
         import torch
         from transformers import pipeline as hf_pipeline
 
-        offline = os.environ.get("OFFLINE", "1").lower() in ("1", "true", "yes")
-        if offline:
-            log.debug("OFFLINE=1 – skipping Depth Anything V2 download")
-            return None, None
+        # Use settings.offline (reads from .env) — NOT a hardcoded default.
+        # This ensures the model is used when it is cached locally,
+        # even when OFFLINE=1 was intended only to block LLM/API calls.
+        offline = _is_offline()
+        log.debug("[DepthEngine] offline=%s, attempting to load: %s", offline, _DEPTH_ANYTHING_V2_HF_ID)
 
+        # If offline, use local_files_only to load from cache without network.
+        # If not offline, allow download on first use.
         pipe = hf_pipeline(
             task="depth-estimation",
             model=_DEPTH_ANYTHING_V2_HF_ID,
             device=device,
+            local_files_only=offline,  # Use cache only when offline
         )
-        log.info("Depth Anything V2 loaded successfully on %s", device)
+        log.info("[DepthEngine] Depth-Anything-V2-Metric-Indoor loaded on %s (offline=%s)", device, offline)
         return pipe, "depth_anything_v2"
     except Exception as exc:
-        log.debug("Could not load Depth Anything V2: %s", exc)
+        log.warning("[DepthEngine] Could not load Depth-Anything-V2-Metric-Indoor: %s", exc)
         return None, None
 
 
 def _predict_depth_anything(pipe, image_bgr: np.ndarray) -> Optional[np.ndarray]:
-    """Run Depth Anything V2 and return a (H, W) float32 relative depth map."""
+    """Run Depth-Anything-V2-Metric-Indoor and return a (H, W) float32 METRIC depth map.
+
+    The Metric Indoor variant outputs depth directly in meters — no affine rescaling needed.
+    The 'predicted_depth' key contains the raw metric tensor.
+    """
     try:
         from PIL import Image as PILImage
         pil_img = PILImage.fromarray(cv2.cvtColor(image_bgr, cv2.COLOR_BGR2RGB))
         result = pipe(pil_img)
-        depth = np.array(result["depth"], dtype=np.float32)
-        # Resize to original resolution
+
+        # 'predicted_depth' is the raw model output tensor (metric metres for Metric-Indoor)
+        if "predicted_depth" in result:
+            depth_tensor = result["predicted_depth"]
+            if hasattr(depth_tensor, "cpu"):
+                depth_tensor = depth_tensor.cpu().numpy()
+            elif hasattr(depth_tensor, "numpy"):
+                depth_tensor = depth_tensor.numpy()
+            else:
+                depth_tensor = np.array(depth_tensor)
+            depth = np.squeeze(depth_tensor).astype(np.float32)
+        else:
+            # Fallback: convert PIL image to float array
+            depth = np.array(result["depth"], dtype=np.float32)
+
+        # Resize to original image resolution if needed
         if depth.shape[:2] != image_bgr.shape[:2]:
             depth = cv2.resize(
                 depth, (image_bgr.shape[1], image_bgr.shape[0]),
                 interpolation=cv2.INTER_LINEAR,
             )
+
+        # Sanity check: metric indoor depth should be in [0.1, 20] metres
+        valid_ratio = float(np.mean((depth > 0.1) & (depth < 20.0)))
+        if valid_ratio < 0.1:
+            log.warning("[DepthEngine] Suspiciously few valid depth pixels (%.1f%%). "
+                        "Model output range: [%.3f, %.3f]. Skipping frame.",
+                        valid_ratio * 100, float(depth.min()), float(depth.max()))
+            return None
+
+        log.debug("[DepthEngine] Depth: min=%.3f median=%.3f max=%.3f m (valid=%.1f%%)",
+                  float(depth.min()), float(np.median(depth)), float(depth.max()), valid_ratio * 100)
         return depth
     except Exception as exc:
-        log.debug("Depth Anything V2 inference failed: %s", exc)
+        log.warning("[DepthEngine] Depth-Anything inference failed: %s", exc)
         return None
 
 
@@ -572,21 +622,30 @@ class DepthEngine:
         )
 
     def predict_raw(self, image_bgr: np.ndarray) -> Optional[np.ndarray]:
-        """Return raw/relative depth map without conditioning on camera-height/ceiling priors."""
+        """Return raw METRIC depth map in metres.
+
+        For depth_anything_v2 (Metric-Indoor): returns metric depth directly.
+        For midas: converts disparity to pseudo-metric (relative, not absolute metres).
+        For geometric: returns None (no pixel-level depth available).
+
+        Returns:
+            (H, W) float32 array in metres, or None if unavailable.
+        """
         if self.backend == "depth_anything_v2":
-            rel = _predict_depth_anything(self._da_pipe, image_bgr)
-            if rel is not None:
-                d_inv = rel.copy()
-                d_inv = (d_inv - d_inv.min()) / (d_inv.max() - d_inv.min() + 1e-8)
-                return 1.0 / (d_inv + 0.01)
+            # Metric-Indoor model: output is already in metres
+            return _predict_depth_anything(self._da_pipe, image_bgr)
 
         if self.backend == "midas":
+            # MiDaS is relative disparity — convert to pseudo-depth for ratio estimation
             rel = _predict_midas(self._midas_net, self._midas_size, image_bgr)
             if rel is not None:
                 d_inv = rel.copy()
-                d_inv = (d_inv - d_inv.min()) / (d_inv.max() - d_inv.min() + 1e-8)
-                return 1.0 / (d_inv + 0.01)
+                d_min, d_max = d_inv.min(), d_inv.max()
+                if d_max - d_min > 1e-6:
+                    d_inv = (d_inv - d_min) / (d_max - d_min)
+                return 1.0 / (d_inv + 0.01)  # pseudo-metric: only ratios are meaningful
 
+        # geometric backend: no per-pixel depth available for scale estimation
         return None
 
     def predict_and_unproject(

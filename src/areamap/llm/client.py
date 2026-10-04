@@ -270,6 +270,63 @@ class LLMClient:
                             break
         return None
 
+    def _ensure_ollama_running(self, model: str) -> None:
+        """Ensure Ollama server is running and the requested model is pulled."""
+        import subprocess
+        import time
+        import os
+        
+        try:
+            with httpx.Client(timeout=1.0) as client:
+                resp = client.get("http://localhost:11434/api/tags")
+                running = (resp.status_code == 200)
+        except Exception:
+            running = False
+            
+        if not running:
+            logger.info("[LLM] Ollama server not responding. Attempting to start 'ollama serve' in background...")
+            try:
+                creationflags = 0x08000000 if os.name == 'nt' else 0
+                subprocess.Popen(
+                    ["ollama", "serve"], 
+                    stdout=subprocess.DEVNULL, 
+                    stderr=subprocess.DEVNULL, 
+                    creationflags=creationflags
+                )
+                
+                # Wait up to 10s for the API to come up
+                for _ in range(10):
+                    time.sleep(1.0)
+                    try:
+                        with httpx.Client(timeout=1.0) as client:
+                            if client.get("http://localhost:11434/api/tags").status_code == 200:
+                                running = True
+                                logger.info("[LLM] Ollama server started successfully.")
+                                break
+                    except Exception:
+                        pass
+                        
+                if not running:
+                    logger.warning("[LLM] Timed out waiting for Ollama to start. Is it installed?")
+                    return
+            except Exception as e:
+                logger.warning("[LLM] Could not launch Ollama: %s", e)
+                return
+                
+        # Check if the required model is pulled
+        try:
+            with httpx.Client(timeout=5.0) as client:
+                resp = client.get("http://localhost:11434/api/tags")
+                if resp.status_code == 200:
+                    tags = resp.json().get("models", [])
+                    has_model = any(m.get("name") == model or m.get("name") == f"{model}:latest" for m in tags)
+                    if not has_model:
+                        logger.info("[LLM] Ollama model '%s' not found locally. Pulling (this may take a while)...", model)
+                        subprocess.run(["ollama", "pull", model], check=True)
+                        logger.info("[LLM] Successfully pulled model '%s'.", model)
+        except Exception as e:
+            logger.warning("[LLM] Failed to check/pull Ollama model '%s': %s", model, e)
+
     def _call_openai_compat(
         self,
         base_url: str,
@@ -486,6 +543,9 @@ class LLMClient:
             self.call_count += 1
             self.stats["calls"] += 1
             call_t0 = time.time()
+
+            if provider == "ollama":
+                self._ensure_ollama_running(model)
 
             parsed_data, status, detail = self._call_openai_compat(
                 base_url=cfg["base_url"],

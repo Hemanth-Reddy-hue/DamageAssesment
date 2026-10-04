@@ -30,7 +30,7 @@ class RegistrationInfo:
 class VideoRoom:
     room_id: str                                # "room_00", "room_01", ...
     points: np.ndarray                          # (N,3) metres, z-up, shared world frame
-    camera_positions: np.ndarray = field(default_factory=lambda: np.zeros((0, 3)))
+    camera_positions: List[Dict[str, Any]] = field(default_factory=list)
     time_range_s: Tuple[float, float] = (0.0, 0.0)
     room_type: Optional[str] = None             # optional name, from LLM/classifier if available
     room_type_source: str = "none"              # "local_model" | "llm" | "override" | "none"

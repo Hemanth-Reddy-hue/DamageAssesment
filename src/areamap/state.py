@@ -105,6 +105,7 @@ class CaptureState(BaseModel):
     device_meta: dict[str, Any] = Field(default_factory=dict)
     rooms: list[str] = Field(default_factory=list)
     point_clouds: dict[str, str] = Field(default_factory=dict, description="room_id -> point cloud artifact path")
+    camera_positions: dict[str, str] = Field(default_factory=dict, description="room_id -> camera positions artifact path")
     room_geometry: dict[str, RoomGeometry] = Field(default_factory=dict)
     openings: dict[str, list[Opening]] = Field(default_factory=dict)
     doorway_transitions: list[dict[str, Any]] = Field(default_factory=list, description="Transition edges between rooms")

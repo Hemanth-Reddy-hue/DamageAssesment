@@ -8,8 +8,68 @@ import sys
 import os
 import argparse
 import subprocess
+import urllib.request
+import zipfile
+import time
 from pathlib import Path
 from typing import Optional
+
+def setup_dependencies():
+    workspace_root = Path(__file__).resolve().parent
+    flag_file = workspace_root / ".setup_done"
+    if flag_file.exists():
+        return
+
+    print("[Bootstrap] Performing one-time setup of requirements and Ollama...")
+    
+    # 1. Install requirements
+    req_file = workspace_root / "requirements.txt"
+    if req_file.exists():
+        print("[Bootstrap] Installing Python requirements...")
+        try:
+            subprocess.check_call([sys.executable, "-m", "pip", "install", "-r", str(req_file)])
+        except subprocess.CalledProcessError as e:
+            print(f"[Bootstrap] Warning: pip install failed with {e}")
+
+    # 2. Download and set up Ollama
+    ollama_dir = workspace_root / "ollama_bin"
+    ollama_exe = ollama_dir / "ollama.exe"
+    
+    if os.name == "nt" and not ollama_exe.exists():
+        print("[Bootstrap] Downloading Ollama for Windows...")
+        ollama_dir.mkdir(exist_ok=True)
+        zip_path = ollama_dir / "ollama-windows-amd64.zip"
+        
+        try:
+            url = "https://github.com/ollama/ollama/releases/latest/download/ollama-windows-amd64.zip"
+            urllib.request.urlretrieve(url, zip_path)
+            
+            print("[Bootstrap] Extracting Ollama...")
+            with zipfile.ZipFile(zip_path, 'r') as zip_ref:
+                zip_ref.extractall(ollama_dir)
+                
+            zip_path.unlink()
+        except Exception as e:
+            print(f"[Bootstrap] Failed to download/extract Ollama: {e}")
+            
+    if ollama_exe.exists():
+        print("[Bootstrap] Starting Ollama server in background...")
+        try:
+            # Check if it's already running
+            res = subprocess.run([str(ollama_exe), "list"], capture_output=True)
+            if res.returncode != 0:
+                subprocess.Popen([str(ollama_exe), "serve"], creationflags=subprocess.DETACHED_PROCESS)
+                time.sleep(3)  # Give server time to spin up
+            
+            print("[Bootstrap] Pulling default model (llava)... This may take a while.")
+            subprocess.check_call([str(ollama_exe), "pull", "llava"])
+        except Exception as e:
+            print(f"[Bootstrap] Ollama setup warning: {e}")
+
+    flag_file.touch()
+    print("[Bootstrap] Setup complete!")
+
+setup_dependencies()
 
 # Ensure src is on sys.path
 WORKSPACE_ROOT = Path(__file__).resolve().parent
@@ -45,23 +105,17 @@ BANNER = r"""
 INSTRUCTIONS = """
 QUICK-START INSTRUCTIONS:
 -------------------------
-1. Run on a LiDAR scan directory:
-   python main.py Data/SingleRoom --out out/lidar
+1. Run on a video walkthrough:
+   python main.py Data/1BHKRoom/1bhKRoom.mp4
 
-2. Run on a handheld Video walkthrough:
-   python main.py Data/1BHKRoom/1bhKRoom.mp4 --out out/1bhk
+2. Run on a folder containing LiDAR or Photo exports:
+   python main.py Data/HOUSE1
 
-3. Run with a real measured ceiling height (recommended):
-   python main.py Data/1BHKRoom/1bhKRoom.mp4 --reference-height 2.7
-
-4. Run fully offline / no LLMs:
+3. Run fully offline / no LLMs:
    python main.py Data/1BHKRoom/1bhKRoom.mp4 --no-llm
 
-5. Run geometry-only (no Hugging Face model downloads):
+4. Run geometry-only (no Hugging Face model downloads):
    python main.py Data/1BHKRoom/1bhKRoom.mp4 --no-local-models
-
-6. Run automated test suite:
-   python main.py --test
 """
 
 
@@ -283,17 +337,7 @@ def _print_summary(state: CaptureState, output_dir: str):
 def interactive_prompt() -> Optional[str]:
     """Provide a user-friendly interactive selector when run with no arguments."""
     print(INSTRUCTIONS)
-    print("AVAILABLE SAMPLE DATA IN WORKSPACE:")
-    samples = [
-        ("1", "Data/1BHKRoom/1bhKRoom.mp4", "Two-Room Video Walkthrough (1BHK clip)"),
-        ("2", "Data/SingleRoom", "Real iPhone LiDAR Scan (1,715 depth frames + odometry)"),
-        ("3", "Data/raw/sample_living_room_photos", "Photo Stills Directory (multi-photo)"),
-    ]
-    for key, path, desc in samples:
-        exists = " [AVAILABLE]" if Path(path).exists() else " [MISSING]"
-        print(f"  [{key}] {path:<36} : {desc}{exists}")
-
-    print("\nPress 1, 2, or 3 to run a sample, enter a custom file/folder path, or 'q' to quit:")
+    print("\nPlease enter a custom file/folder path, or 'q' to quit:")
     try:
         choice = input("Enter choice or path: ").strip().strip("\"'")
     except (EOFError, KeyboardInterrupt):
@@ -302,12 +346,7 @@ def interactive_prompt() -> Optional[str]:
     if not choice or choice.lower() in ["q", "quit", "exit"]:
         return None
 
-    choice_map = {
-        "1": "Data/1BHKRoom/1bhKRoom.mp4",
-        "2": "Data/SingleRoom",
-        "3": "Data/raw/sample_living_room_photos"
-    }
-    return choice_map.get(choice, choice)
+    return choice
 
 
 def main():
@@ -325,9 +364,7 @@ def main():
     parser.add_argument("--no-local-models", action="store_true", help="Skip loading Hugging Face models; rooms use numbered names")
     parser.add_argument("--reference-height", type=float, default=None, help="Known reference ceiling height in metres (e.g. 2.7)")
     parser.add_argument("--rooms-json", type=str, default=None, help="Path to manual room boundaries rooms.json")
-    parser.add_argument("--allow-synthetic", action="store_true", help="Allow synthetic fallback geometry (demo/test only; QA fails)")
-    parser.add_argument("--test", action="store_true", help="Run the automated test suite (pytest)")
-    parser.add_argument("--drift-ablation", action="store_true", help="Run Gate G4 drift correction ablation study")
+    parser.add_argument("--allow-synthetic", action="store_true", help="Allow synthetic fallback geometry if features fail")
     parser.add_argument("--instructions", action="store_true", help="Print detailed usage instructions and exit")
 
     args = parser.parse_args()
@@ -336,18 +373,6 @@ def main():
 
     if args.instructions:
         print(INSTRUCTIONS)
-        return
-
-    if args.test:
-        print("[AreaMap] Launching Pytest Test Suite...")
-        cmd = [sys.executable, "-m", "pytest", "tests/", "-v"]
-        subprocess.run(cmd, cwd=str(WORKSPACE_ROOT))
-        return
-
-    if args.drift_ablation:
-        print("[AreaMap] Running Gate G4 Drift Correction Ablation...")
-        from bench.ablation_drift import run_drift_ablation
-        run_drift_ablation()
         return
 
     target_path = args.capture

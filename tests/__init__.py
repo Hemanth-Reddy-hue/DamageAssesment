@@ -1,1 +1,0 @@
-"""AreaMap test suite."""

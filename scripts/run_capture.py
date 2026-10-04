@@ -7,6 +7,12 @@ from pathlib import Path
 # Add src to sys.path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
+try:
+    from dotenv import load_dotenv
+    load_dotenv(override=True)
+except ImportError:
+    pass
+
 from areamap.state import CaptureState
 from areamap.graph import build_areamap_graph
 

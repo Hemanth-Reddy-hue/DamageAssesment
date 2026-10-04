@@ -82,13 +82,16 @@ def ingest_node(state: CaptureState) -> dict[str, Any]:
             r_tier = state.tier if state.tier is not None else detect_tier(s_dir)
             if r_tier == "lidar":
                 pts, meta = ingest_lidar_capture(s_dir)
+                cams = None
             elif r_tier == "video":
                 recon = ingest_video_capture(s_dir)
                 pts = recon.rooms[0].points if recon.rooms else np.zeros((0, 3), dtype=np.float32)
+                cams = recon.rooms[0].camera_positions if recon.rooms else None
                 meta = recon.to_metadata_dict()
             else:  # photo
                 img_files = [p for p in s_dir.rglob("*") if p.suffix.lower() in {".jpg", ".jpeg", ".png"}]
                 pts, meta = ingest_photo_capture(img_files)
+                cams = None
 
             cloud_path = cache_dir / f"cloud_{r_id}.npy"
             np.save(cloud_path, pts)
@@ -139,6 +142,8 @@ def ingest_node(state: CaptureState) -> dict[str, Any]:
     rooms_dict = {}
     meta = {"tier": tier, "source": str(capture_path)}
 
+    camera_positions_dict = {}
+
     if tier == "lidar":
         pts, meta = ingest_lidar_capture(capture_path)
         rooms_dict["room_00"] = pts
@@ -154,6 +159,8 @@ def ingest_node(state: CaptureState) -> dict[str, Any]:
             if hasattr(recon, "rooms") and recon.rooms:
                 for v_room in recon.rooms:
                     rooms_dict[v_room.room_id] = v_room.points
+                    if v_room.camera_positions is not None and len(v_room.camera_positions) > 0:
+                        camera_positions_dict[v_room.room_id] = v_room.camera_positions
                 meta = recon.to_metadata_dict()
                 if recon.transitions:
                     updates["doorway_transitions"] = recon.transitions
@@ -191,6 +198,14 @@ def ingest_node(state: CaptureState) -> dict[str, Any]:
         cloud_path = cache_dir / f"cloud_{r_id}.npy"
         np.save(cloud_path, r_pts)
         updates["point_clouds"][r_id] = str(cloud_path)
+
+    import json
+    updates["camera_positions"] = {}
+    for r_id, cam_poses in camera_positions_dict.items():
+        cam_path = cache_dir / f"cams_{r_id}.json"
+        with open(cam_path, "w") as f:
+            json.dump(cam_poses, f)
+        updates["camera_positions"][r_id] = str(cam_path)
 
     updates["timings"] = {**state.timings, "ingest": round(time.time() - t0, 4)}
     return updates

@@ -32,3 +32,16 @@ Data/
 .idea/
 *.swp
 code/
+
+# Data and outputs
+out/
+Data/
+.areamap_cache/
+
+# Downloaded Models and Daemons
+models/
+ollama_bin/
+.setup_done
+OllamaSetup*.exe
+ollama_bin/
+

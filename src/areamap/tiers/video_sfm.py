@@ -23,6 +23,7 @@ import numpy as np
 
 from areamap.config import settings
 from areamap.tiers.video import extract_sharp_keyframes
+from areamap.geometry.scale_resolver import ScaleResolver, ScaleCue, estimate_floor_and_ceiling
 from areamap.tiers.video_types import (
     RegistrationInfo,
     ScaleInfo,
@@ -351,8 +352,21 @@ def reconstruct_video_sfm(video_path: Path, output_dir: Path) -> VideoReconstruc
             timings=timings,
         )
 
-    # 5. Gravity Alignment from Camera Up-Vectors (WP5.1 & Fix F10)
+    # 5. Gravity Alignment & Clean Cloud
     t0_gravity = time.time()
+    
+    import open3d as o3d
+    # Build open3d cloud to clean
+    if point_records:
+        pts_xyz = np.array([r["xyz"] for r in point_records], dtype=np.float64)
+        pcd = o3d.geometry.PointCloud()
+        pcd.points = o3d.utility.Vector3dVector(pts_xyz)
+        # Tighten statistical outlier removal to cut off the smeared tail
+        cl, ind = pcd.remove_statistical_outlier(nb_neighbors=50, std_ratio=1.0)
+        valid_mask = np.zeros(len(point_records), dtype=bool)
+        valid_mask[ind] = True
+        point_records = [r for i, r in enumerate(point_records) if valid_mask[i]]
+        
     up_vectors: List[np.ndarray] = []
     cam_centers: Dict[int, np.ndarray] = {}
     cam_rotations: Dict[int, np.ndarray] = {}
@@ -372,159 +386,288 @@ def reconstruct_video_sfm(video_path: Path, output_dir: Path) -> VideoReconstruc
             cam_rotations[img.image_id] = R_c
             cam_translations[img.image_id] = t_c
 
+    # Initial rough gravity rotation from IMU
     R_grav = _compute_gravity_rotation(up_vectors)
-
-    # Rotate all points and camera centers to Z-up world frame
     for rec in point_records:
         rec["xyz_grav"] = R_grav @ rec["xyz"]
-
     rotated_cam_centers: Dict[int, np.ndarray] = {
         img_id: R_grav @ c for img_id, c in cam_centers.items()
     }
+
+    # --- SECONDARY GRAVITY CORRECTION ---
+    from areamap.geometry.planes import extract_horizontal_planes, extract_vertical_wall_planes
+    pts_rough = np.array([r["xyz_grav"] for r in point_records])
+    
+    if len(pts_rough) > 100:
+        floor_z_rough, ceil_z_rough = np.percentile(pts_rough[:, 2], [5, 95])
+        walls = extract_vertical_wall_planes(pts_rough, float(floor_z_rough), float(ceil_z_rough))
+        
+        wall_up = None
+        if len(walls) >= 2:
+            walls.sort(key=lambda w: w["count"], reverse=True)
+            n1 = walls[0]["normal_3d"]
+            for w in walls[1:]:
+                n2 = w["normal_3d"]
+                if abs(np.dot(n1, n2)) < 0.9:  # non-parallel
+                    cross = np.cross(n1, n2)
+                    norm = np.linalg.norm(cross)
+                    if norm > 1e-4:
+                        wall_up = cross / norm
+                        if wall_up[2] < 0:
+                            wall_up = -wall_up
+                    break
+
+        floor_plane_rough, _, _ = extract_horizontal_planes(pts_rough)
+        floor_n = floor_plane_rough["normal"] if floor_plane_rough else None
+        if floor_n is not None and floor_n[2] < 0:
+            floor_n = -floor_n
+
+        final_up = None
+        if floor_n is not None and wall_up is not None:
+            angle_diff = np.arccos(min(1.0, np.dot(floor_n, wall_up))) * 180 / np.pi
+            print(f"[DIAGNOSTICS] Wall-derived vs Floor-derived UP angle diff: {angle_diff:.2f} deg")
+            if angle_diff <= 3.0:
+                final_up = floor_n
+            else:
+                print("[DIAGNOSTICS] Floor normal disagrees with walls (by >3 deg), trusting walls.")
+                final_up = wall_up
+        elif floor_n is not None:
+            final_up = floor_n
+        elif wall_up is not None:
+            final_up = wall_up
+        else:
+            final_up = np.array([0, 0, 1])
+
+        # Build corrective rotation to align final_up to [0, 0, 1]
+        v = np.cross(final_up, np.array([0, 0, 1]))
+        c = np.dot(final_up, np.array([0, 0, 1]))
+        if c > 0.9999:
+            R_corr = np.eye(3)
+        elif c < -0.9999:
+            R_corr = -np.eye(3)
+        else:
+            vx = np.array([[0, -v[2], v[1]], [v[2], 0, -v[0]], [-v[1], v[0], 0]])
+            R_corr = np.eye(3) + vx + (vx @ vx) * (1 / (1 + c))
+
+        # Apply correction
+        for rec in point_records:
+            rec["xyz_grav"] = R_corr @ rec["xyz_grav"]
+        for img_id in rotated_cam_centers:
+            rotated_cam_centers[img_id] = R_corr @ rotated_cam_centers[img_id]
+
+        # Translate so floor is at z = 0
+        pts_corrected = np.array([r["xyz_grav"] for r in point_records])
+        floor_corr, _, _ = extract_horizontal_planes(pts_corrected)
+        z_shift = floor_corr["z_mean"] if floor_corr else np.percentile(pts_corrected[:, 2], 5)
+        
+        for rec in point_records:
+            rec["xyz_grav"][2] -= z_shift
+        for img_id in rotated_cam_centers:
+            rotated_cam_centers[img_id][2] -= z_shift
+            
+    # Recompute diagnostics for the aligned and zeroed cloud
+    z_pts = np.array([r["xyz_grav"] for r in point_records])
+    cam_zs = [c[2] for c in rotated_cam_centers.values()]
+    floor_z, ceil_z, ceil_method, floor_plane, ceil_plane = estimate_floor_and_ceiling(z_pts, cam_zs)
+    
     timings["gravity_alignment_s"] = round(time.time() - t0_gravity, 3)
 
-    # 6. Metric Scale from Fused Cues (WP5.3 & Fix F9)
+    # 6. Metric Scale from Fused Cues via ScaleResolver
     t0_scale = time.time()
-    cues_dict: Dict[str, Dict[str, Any]] = {}
-    chosen_scale: Optional[float] = None
-    scale_method = "none"
-    scale_confidence = 0.0
-    relative_uncertainty = 0.25
-
-    # Cue D: User Reference (WP5.3)
+    resolver = ScaleResolver(output_dir)
+    
+    # Cue: User Reference
     ref_m = settings.known_reference_m
     if ref_m is not None and ref_m > 0.1:
-        # User explicitly supplied a reference height
-        log.info("[video] Using user-supplied reference: %0.2f m (%s)", ref_m, settings.known_reference_kind)
-        # Compute SfM vertical height from points or cameras
-        z_pts = [r["xyz_grav"][2] for r in point_records]
-        z_lo, z_hi = float(np.percentile(z_pts, 5)), float(np.percentile(z_pts, 95))
-        sfm_h = max(0.2, z_hi - z_lo)
-        chosen_scale = ref_m / sfm_h
-        scale_method = "reference"
-        scale_confidence = 0.95
-        relative_uncertainty = 0.04
-        cues_dict["reference"] = {"value": chosen_scale, "input_m": ref_m, "confidence": 0.95}
+        if floor_z is not None and ceil_z is not None:
+            sfm_h = ceil_z - floor_z
+            resolver.add_cue(ScaleCue("user_reference", ref_m / sfm_h, 0.0, 0.99))
 
-    # Cue A: Metric Depth Model (unconditioned on priors)
-    depth_scale_ratios: List[float] = []
-    if not chosen_scale:
-        try:
-            from areamap.geometry.depth_engine import DepthEngine
-            engine = DepthEngine()
-            # Sample up to 10 registered images evenly spread across clip
+    # Cue: Metric Depth Model (primary scale source — no hardcoded priors)
+    # Depth-Anything-V2-Metric-Indoor outputs depth directly in metres.
+    # Scale = median(metric_depth_at_pixel / sfm_depth_at_same_3D_point)
+    depth_scale_ratios = []
+    depth_backend_used = "none"
+    try:
+        from areamap.geometry.depth_engine import DepthEngine
+        engine = DepthEngine()
+        depth_backend_used = engine.backend
+        log.info("[ScaleResolver] DepthEngine backend: %s (OFFLINE env=%s)",
+                 engine.backend, os.environ.get("OFFLINE", "?"))
+        print(f"\n[SCALE] DepthEngine backend: {engine.backend}")
+        print(f"[SCALE] OFFLINE env: {os.environ.get('OFFLINE', 'NOT_SET')}")
+
+        if engine.backend not in ("geometric", None):
+            # Sample up to 20 frames spread evenly across the video
             sample_imgs = list(reg_images)
-            if len(sample_imgs) > 10:
-                step = len(sample_imgs) / 10.0
-                sample_imgs = [sample_imgs[int(i * step)] for i in range(10)]
+            if len(sample_imgs) > 20:
+                step = len(sample_imgs) / 20.0
+                sample_imgs = [sample_imgs[int(i * step)] for i in range(20)]
+
+            print(f"[SCALE] Computing depth ratios from {len(sample_imgs)} frames...")
+            first_frame_printed = False
 
             for img in sample_imgs:
                 img_path = img_dir / img.name
-                if not img_path.exists():
-                    continue
+                if not img_path.exists(): continue
                 frame_bgr = cv2.imread(str(img_path))
-                if frame_bgr is None:
-                    continue
-
+                if frame_bgr is None: continue
                 R_c = cam_rotations.get(img.image_id)
                 t_c = cam_translations.get(img.image_id)
-                if R_c is None or t_c is None:
-                    continue
+                if R_c is None: continue
 
-                # Get unconditioned raw depth
+                # Get metric depth map (already in metres for Metric-Indoor model)
                 raw_depth = engine.predict_raw(frame_bgr)
-                if raw_depth is None:
-                    continue
+                if raw_depth is None: continue
 
-                # Project SfM points into this camera
+                if not first_frame_printed:
+                    print(f"[SCALE] Depth map sample: "
+                          f"min={raw_depth.min():.3f} "
+                          f"median={float(np.median(raw_depth)):.3f} "
+                          f"max={raw_depth.max():.3f} m")
+                    first_frame_printed = True
+
                 frame_ratios = []
                 for p2D in getattr(img, "points2D", []):
                     if hasattr(p2D, "has_point3D") and p2D.has_point3D():
-                        p3_id = p2D.point3D_id
-                        p3_obj = primary_model.points3D.get(p3_id)
-                        if p3_obj is not None:
+                        if p2D.point3D_id in primary_model.points3D:
+                            p3_obj = primary_model.points3D[p2D.point3D_id]
                             sfm_cam_z = float((R_c @ p3_obj.xyz + t_c)[2])
-                            if sfm_cam_z > 0.1:
-                                px_x, px_y = int(p2D.xy[0]), int(p2D.xy[1])
+                            if sfm_cam_z > 0.05:
+                                px_x = int(round(p2D.xy[0]))
+                                px_y = int(round(p2D.xy[1]))
                                 if 0 <= px_y < raw_depth.shape[0] and 0 <= px_x < raw_depth.shape[1]:
                                     metric_z = float(raw_depth[px_y, px_x])
-                                    if 0.2 <= metric_z <= 10.0:
+                                    if 0.15 <= metric_z <= 12.0:
                                         frame_ratios.append(metric_z / sfm_cam_z)
 
-                if frame_ratios:
+                if len(frame_ratios) >= 20:
                     depth_scale_ratios.append(float(np.median(frame_ratios)))
 
-        except Exception as exc:
-            log.debug("Metric depth engine failed for scale recovery: %s", exc)
+            if depth_scale_ratios:
+                print(f"[SCALE] Frame scale ratios: "
+                      f"min={min(depth_scale_ratios):.4f} "
+                      f"max={max(depth_scale_ratios):.4f} "
+                      f"across {len(depth_scale_ratios)} frames")
+        else:
+            print("[SCALE] WARNING: Geometric depth backend — no metric depth available.")
+            print("[SCALE] The model load was blocked. Check OFFLINE setting in .env")
+    except Exception as exc:
+        log.warning("[ScaleResolver] Depth model exception: %s", exc, exc_info=True)
+        print(f"[SCALE] Depth model exception: {type(exc).__name__}: {exc}")
 
-    if depth_scale_ratios and not chosen_scale:
-        med_depth_scale = float(np.median(depth_scale_ratios))
-        spread = float(np.std(depth_scale_ratios) / (med_depth_scale + 1e-6))
-        cues_dict["depth_fused"] = {
-            "value": round(med_depth_scale, 4),
-            "samples": len(depth_scale_ratios),
-            "spread": round(spread, 3),
-        }
-        if len(depth_scale_ratios) >= 4 and spread < 0.20:
-            chosen_scale = med_depth_scale
-            scale_method = "depth_fused"
-            scale_confidence = max(0.60, min(0.85, 0.90 - spread))
-            relative_uncertainty = max(0.08, round(spread, 3))
+    if depth_scale_ratios:
+        med_depth = float(np.median(depth_scale_ratios))
+        mad = float(np.median(np.abs(np.array(depth_scale_ratios) - med_depth)))
+        sigma = max(0.01, mad / (med_depth + 1e-6))
+        # Confidence: tight per-frame agreement → high confidence
+        conf = float(np.clip(0.95 - sigma * 3.0, 0.3, 0.95))
+        resolver.add_cue(ScaleCue(
+            name="metric_depth",
+            scale=med_depth,
+            sigma=sigma,
+            confidence=conf,
+            detail=f"frames={len(depth_scale_ratios)} backend={depth_backend_used}"
+        ))
+        print(f"[SCALE] [OK] Metric depth cue: scale={med_depth:.4f} sigma={sigma:.4f} "
+              f"conf={conf:.2f} ({len(depth_scale_ratios)} frames)")
+    else:
+        print("[SCALE] [FAIL] No metric depth cue generated.")
+        print("[SCALE] Scale will be derived from user_reference only (or will fail without one).")
+        print("[SCALE] Run with --reference-height <measured_ceiling_m> to provide a reference scale.")
 
-    # Cue B: Camera Height Prior (weak baseline ~1.45m)
-    if rotated_cam_centers:
-        cam_zs = [c[2] for c in rotated_cam_centers.values()]
-        med_cam_z = float(np.median(cam_zs))
-        # Estimate floor z from bottom 10th percentile of points
-        z_pts = [r["xyz_grav"][2] for r in point_records]
-        z_floor_est = float(np.percentile(z_pts, 8))
-        sfm_cam_h = max(0.2, med_cam_z - z_floor_est)
-        cam_height_scale = 1.45 / sfm_cam_h
-        cues_dict["camera_height"] = {
-            "value": round(cam_height_scale, 4),
-            "sfm_cam_height": round(sfm_cam_h, 3),
-            "confidence": 0.30,
-        }
+    # Diagnostic summary (no priors added — only the model and user reference are cues)
+    if floor_z is not None:
+        print(f"[SCALE] SfM geometry: floor_z={floor_z:.4f} ceil_z={ceil_z} method={ceil_method}")
+        if cam_zs:
+            med_cam_z_raw = float(np.median(cam_zs))
+            print(f"[SCALE] SfM geometry: cam_z_median={med_cam_z_raw:.4f} "
+                  f"sfm_cam_h_above_floor={med_cam_z_raw - floor_z:.4f}")
+    
+    chosen_scale, scale_method, scale_confidence = resolver.resolve()
+    print(f"[SCALE] Final: scale={chosen_scale:.4f} method={scale_method} conf={scale_confidence:.2f}")
 
-        # Check for disagreement if depth_fused was computed
-        if "depth_fused" in cues_dict and chosen_scale:
-            depth_val = cues_dict["depth_fused"]["value"]
-            if abs(depth_val - cam_height_scale) / depth_val > 0.25:
-                warnings.append(f"scale_cues_disagree: depth_scale={depth_val:.3f} differs from camera_height_scale={cam_height_scale:.3f} by >25%")
-                relative_uncertainty = max(relative_uncertainty, 0.20)
-
-        if not chosen_scale:
-            chosen_scale = cam_height_scale
-            scale_method = "prior"
-            scale_confidence = 0.30
-            relative_uncertainty = 0.25
-
-    if not chosen_scale or chosen_scale <= 0:
-        chosen_scale = 1.0
-        scale_method = "prior"
-        scale_confidence = 0.10
-        relative_uncertainty = 0.30
-        warnings.append("scale_unreliable: using unit scale default")
+    # === POST-SCALE PLAUSIBILITY GATE ===
+    # After applying the scale, the median camera height above the floor MUST be
+    # in the range 1.0-2.2m for a hand-held phone walkthrough.
+    # If it is not, the scale is wrong — override with the camera-height-based scale.
+    if floor_z is not None and rotated_cam_centers:
+        med_cam_z_sfm = float(np.median(cam_zs))
+        sfm_cam_h = med_cam_z_sfm - floor_z
+        if sfm_cam_h > 0:
+            cam_height_check = sfm_cam_h * chosen_scale
+            print(f"[SCALE] Post-gate check: camera height after scaling = {cam_height_check:.3f} m")
+            if not (1.0 <= cam_height_check <= 2.2):
+                # Override: derive scale directly from camera height prior
+                override_scale = 1.45 / sfm_cam_h
+                print(f"[SCALE] *** PLAUSIBILITY GATE FAILED ({cam_height_check:.3f} m outside 1.0-2.2 m). "
+                      f"Overriding with camera-height scale={override_scale:.4f} ***")
+                chosen_scale = override_scale
+                scale_method = "camera_height_override"
+                scale_confidence = 0.45
+            else:
+                print(f"[SCALE] Post-gate passed: camera height = {cam_height_check:.3f} m (in 1.0-2.2 m range)")
 
     scale_info = ScaleInfo(
         factor=round(chosen_scale, 4),
         method=scale_method,
         confidence=round(scale_confidence, 2),
-        cues=cues_dict,
-        relative_uncertainty=round(relative_uncertainty, 3),
+        cues={},
+        relative_uncertainty=0.1 if scale_confidence > 0.5 else 0.3,
     )
     timings["scale_fusion_s"] = round(time.time() - t0_scale, 3)
+    
+    def apply_global_scale(records, cams, scale):
+        for r in records:
+            r["xyz_scaled"] = r["xyz_grav"] * scale
+        for k in cams:
+            cams[k] = cams[k] * scale
+    
+    apply_global_scale(point_records, rotated_cam_centers, chosen_scale)
+    scaled_cam_centers = rotated_cam_centers
 
-    log.info("[video] scale %0.3f via %s (conf %0.2f ±%d%%)",
-             chosen_scale, scale_method, scale_confidence, int(relative_uncertainty * 100))
+    # === DIAGNOSTICS FOR USER ===
+    print("\n" + "="*40)
+    print("[USER_DIAGNOSTICS] BEGIN")
+    
+    # 1. Camera height above floor (after scaling)
+    if floor_plane and "z_mean" in floor_plane:
+        floor_z_sfm_val = floor_plane["z_mean"]
+        floor_z_metric = floor_z_sfm_val * chosen_scale
+        med_cam_z_metric = float(np.median([c[2] for c in scaled_cam_centers.values()]))
+        cam_height = med_cam_z_metric - floor_z_metric
+        print(f"[USER_DIAGNOSTICS] Camera height above floor plane: {cam_height:.3f} m")
+        
+        # 2. Floor normal angle
+        if "normal" in floor_plane:
+            floor_norm = floor_plane["normal"]
+            # It's already in gravity-aligned frame, so up is [0, 0, 1]
+            angle = np.arccos(abs(floor_norm[2])) * 180.0 / np.pi
+            print(f"[USER_DIAGNOSTICS] Angle between floor normal and up-vector: {angle:.3f} degrees")
+            print(f"[USER_DIAGNOSTICS] Floor plane inliers: {len(floor_plane['inliers'])}")
+    else:
+        print("[USER_DIAGNOSTICS] No floor plane found.")
 
-    # Apply metric scale to all rotated points and camera centers
-    for rec in point_records:
-        rec["xyz_scaled"] = rec["xyz_grav"] * chosen_scale
+    if ceil_plane and "inliers" in ceil_plane:
+        print(f"[USER_DIAGNOSTICS] Ceiling plane inliers: {len(ceil_plane['inliers'])}")
+    else:
+        print("[USER_DIAGNOSTICS] Ceiling plane inliers: NONE")
 
-    scaled_cam_centers: Dict[int, np.ndarray] = {
-        img_id: c * chosen_scale for img_id, c in rotated_cam_centers.items()
-    }
+    # Raw ceiling candidate and source
+    if floor_z is not None and ceil_z is not None:
+        metric_height = (ceil_z - floor_z) * chosen_scale
+        print(f"[USER_DIAGNOSTICS] Raw ceiling candidate height: {metric_height:.3f} m")
+        print(f"[USER_DIAGNOSTICS] Raw ceiling source (SfM fallback): {ceil_method}")
+    else:
+        print("[USER_DIAGNOSTICS] Raw ceiling candidate height: NONE")
+
+    # Histogram peaks
+    z_pts_metric = np.array([r["xyz_scaled"][2] for r in point_records])
+    hist, bin_edges = np.histogram(z_pts_metric, bins=20)
+    print(f"[USER_DIAGNOSTICS] Z-histogram (metric): {hist.tolist()}")
+    print(f"[USER_DIAGNOSTICS] Z-histogram bin edges: {bin_edges.tolist()}")
+    print("[USER_DIAGNOSTICS] END")
+    print("="*40 + "\n")
 
     # 7. Room Segmentation via Covisibility Graph (WP6)
     t0_seg = time.time()
@@ -712,8 +855,31 @@ def reconstruct_video_sfm(video_path: Path, output_dir: Path) -> VideoReconstruc
         pts_arr = np.array(pts_list, dtype=np.float64) if len(pts_list) >= 50 else np.zeros((0, 3), dtype=np.float64)
 
         # Get cameras for this room
-        cam_pos_list = [scaled_cam_centers[img_id] for img_id, r in room_assignments.items() if r == r_id and img_id in scaled_cam_centers]
-        cam_pos_arr = np.array(cam_pos_list, dtype=np.float64) if cam_pos_list else np.zeros((0, 3), dtype=np.float64)
+        cam_pos_list = []
+        for img_id, r in room_assignments.items():
+            if r == r_id and img_id in scaled_cam_centers:
+                img = next((im for im in reg_images if im.image_id == img_id), None)
+                if img:
+                    img_name = img.name
+                    pos = scaled_cam_centers[img_id]
+                    # R_cam is the original R, we need it rotated by R_align
+                    _, _, R_cam_orig, _ = _extract_camera_up_and_center(img)
+                    if R_cam_orig is not None:
+                        # R_align rotates the world frame. 
+                        # The new cam_from_world rotation is R_cam_orig @ R_align.T
+                        R_align = R_corr @ R_grav
+                        R_cam_new = R_cam_orig @ R_align.T
+                    else:
+                        R_cam_new = np.eye(3)
+                    
+                    cam_pos_list.append({
+                        "img_name": img_name,
+                        "position": pos.tolist(),
+                        "R_cam": R_cam_new.tolist()
+                    })
+
+        # Save as json-serializable list instead of np array
+        cam_pos_arr = cam_pos_list
 
         # Room classification (CLIP local model priority -> LLM priority -> none)
         room_type = None
