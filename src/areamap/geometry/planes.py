@@ -6,6 +6,13 @@ from typing import Any, Tuple, List, Optional
 from areamap.config import settings
 from areamap.state import RoomGeometry, WallSegment, Interval
 from areamap.geometry.uncertainty import calculate_interval
+import logging
+
+logger = logging.getLogger(__name__)
+
+CEILING_PRIOR_M = 2.60
+CEILING_PRIOR_HALF_WIDTH_M = 0.40      # plausibility band for residential ceilings, not a statistical interval
+CEILING_MIN_M, CEILING_MAX_M = 2.0, 4.5
 
 
 def fit_plane_ransac(
@@ -326,40 +333,34 @@ def fit_room_planes(
             if ceil_dist < 0.4:
                 ceiling = None
 
-    ceiling_observed = True
+    # Ceiling is "measured" only if a floor AND a ceiling plane were observed and plausible.
+    ceiling_method = "measured"
     if floor is not None and ceiling is not None:
         floor_z = floor["z_mean"]
         ceiling_z = ceiling["z_mean"]
         ceiling_height_val = float(ceiling_z - floor_z)
-        residual_ceiling = max(floor["residual_std"], ceiling["residual_std"])
+        if not (CEILING_MIN_M <= ceiling_height_val <= CEILING_MAX_M):
+            logger.warning(
+                "Ceiling candidate %.2f m outside [%.1f, %.1f]; using prior", 
+                ceiling_height_val, CEILING_MIN_M, CEILING_MAX_M,
+            )
+            ceiling_method = "prior"
+            ceiling_height_val = CEILING_PRIOR_M
     elif floor is not None:
         floor_z = floor["z_mean"]
-        z_high = np.percentile(points[:, 2], 95)
-        ceiling_height_val = float(z_high - floor_z)
-        ceiling_z = floor_z + ceiling_height_val
-        residual_ceiling = floor["residual_std"]
-        ceiling_observed = False
+        z_high = float(np.percentile(points[:, 2], 95))
+        ceiling_z = z_high                       # used only to bound wall extraction
+        ceiling_height_val = CEILING_PRIOR_M
+        ceiling_method = "prior"
     else:
         z_min, z_max = np.percentile(points[:, 2], [5, 95])
-        floor_z = float(z_min)
-        ceiling_z = float(z_max)
-        ceiling_height_val = float(ceiling_z - floor_z)
-        residual_ceiling = 0.015
-        ceiling_observed = False
+        floor_z, ceiling_z = float(z_min), float(z_max)
+        ceiling_height_val = CEILING_PRIOR_M
+        ceiling_method = "prior"
 
-    # Ceiling provenance & bounds handling
-    ceiling_method = "measured" if ceiling_observed else "prior"
     if tier == "photo":
-        if ceiling_height_val < 2.0 or ceiling_height_val > 3.2:
-            ceiling_height_val = float(np.clip(ceiling_height_val, 2.4, 3.0))
-    elif tier == "video":
-        if not ceiling_observed or ceiling_height_val < 2.0 or ceiling_height_val > 4.0:
-            # WP5.4 / WP8: never silent 2.40 clamp; use generic prior tagged as prior
-            ceiling_height_val = 2.60
-            ceiling_method = "prior"
-    else:
-        if ceiling_height_val < 1.8 or ceiling_height_val > 4.5:
-            ceiling_height_val = float(np.clip(ceiling_height_val, 2.4, 3.2))
+        # Photo clouds are synthesized at the prior ceiling height: not an observation.
+        ceiling_method = "prior"
 
     # 2. Extract Vertical Wall Planes
     detected_walls = extract_vertical_wall_planes(points, floor_z, ceiling_z, max_walls=8, seed=seed)
@@ -464,13 +465,22 @@ def fit_room_planes(
         ]
 
     # 3. Build populated RoomGeometry
-    ceil_interval = calculate_interval(ceiling_height_val, "ceiling", tier)
     if ceiling_method == "prior":
-        ceil_interval.method = "prior"
-    if scale_relative_uncertainty > 0:
-        c_margin = ceiling_height_val * scale_relative_uncertainty
-        ceil_interval.lo = max(0.5, round(ceil_interval.lo - c_margin, 3))
-        ceil_interval.hi = round(ceil_interval.hi + c_margin, 3)
+        ceil_interval = Interval(
+            value=round(ceiling_height_val, 4),
+            lo=round(ceiling_height_val - CEILING_PRIOR_HALF_WIDTH_M, 4),
+            hi=round(ceiling_height_val + CEILING_PRIOR_HALF_WIDTH_M, 4),
+            confidence_level=0.90,
+            method="prior",
+            tier=tier,
+        )
+    else:
+        ceil_interval = calculate_interval(ceiling_height_val, "ceiling", tier)
+        ceil_interval.method = ceiling_method
+        if scale_relative_uncertainty > 0:
+            c_margin = ceiling_height_val * scale_relative_uncertainty
+            ceil_interval.lo = max(0.5, round(ceil_interval.lo - c_margin, 3))
+            ceil_interval.hi = round(ceil_interval.hi + c_margin, 3)
 
     area_interval = calculate_interval(area, "area", tier)
     if scale_relative_uncertainty > 0:

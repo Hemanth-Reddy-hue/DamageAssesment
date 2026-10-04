@@ -55,6 +55,11 @@ def geometry_node(state: CaptureState) -> dict[str, Any]:
             msg = f"Room {rid} used synthetic geometry — not a measurement."
             if msg not in warnings:
                 warnings.append(msg)
+        if geom.ceiling_height.method == "prior":
+            msg = (f"Room {rid}: ceiling height is a prior ({geom.ceiling_height.value:.2f} m, "
+                   f"band +/-{(geom.ceiling_height.hi - geom.ceiling_height.lo)/2:.2f} m), not a measurement.")
+            if msg not in warnings:
+                warnings.append(msg)
 
     return {
         "room_geometry": room_geometry,
