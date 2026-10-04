@@ -48,3 +48,5 @@ hypothesis>=6.100.0
 click>=8.1.0
 requests>=2.31.0
 tqdm>=4.66.0
+pandas
+pycolmap>=4.2.1

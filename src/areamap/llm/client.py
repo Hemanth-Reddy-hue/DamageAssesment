@@ -321,9 +321,16 @@ class LLMClient:
                     tags = resp.json().get("models", [])
                     has_model = any(m.get("name") == model or m.get("name") == f"{model}:latest" for m in tags)
                     if not has_model:
-                        logger.info("[LLM] Ollama model '%s' not found locally. Pulling (this may take a while)...", model)
-                        subprocess.run(["ollama", "pull", model], check=True)
-                        logger.info("[LLM] Successfully pulled model '%s'.", model)
+                        logger.info("[LLM] Ollama model '%s' not found locally. Pulling via API (this may take a few minutes)...", model)
+                        # Use the REST API to pull to avoid WinError 2 if ollama is not in PATH
+                        pull_resp = client.post("http://localhost:11434/api/pull", json={"name": model}, timeout=900.0)
+                        if pull_resp.status_code == 200:
+                            logger.info("[LLM] Successfully pulled model '%s'.", model)
+                        else:
+                            logger.warning("[LLM] Failed to pull model via API: %s", pull_resp.text)
+                            # Fallback just in case
+                            import subprocess
+                            subprocess.run(["ollama", "pull", model], check=True, shell=True)
         except Exception as e:
             logger.warning("[LLM] Failed to check/pull Ollama model '%s': %s", model, e)
 
