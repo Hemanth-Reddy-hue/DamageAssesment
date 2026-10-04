@@ -1,0 +1,422 @@
+{
+  "capture_path": "Data/single_scan_with_ceiling",
+  "tier": "lidar",
+  "device_meta": {
+    "tier": "lidar",
+    "source": "Data\\single_scan_with_ceiling",
+    "voxel_size_m": 0.05,
+    "confidence_threshold": 1,
+    "total_frames_recorded": 9745,
+    "raw_point_count": 1144634,
+    "downsampled_point_count": 518848,
+    "keyframes_processed": 390
+  },
+  "rooms": [
+    "room_00"
+  ],
+  "point_clouds": {
+    "room_00": "data\\cache\\cloud_room_00.npy"
+  },
+  "room_geometry": {
+    "room_00": {
+      "room_id": "room_00",
+      "room_name": "Room 00",
+      "ceiling_height": {
+        "value": 2.4,
+        "lo": 2.3808,
+        "hi": 2.4192,
+        "confidence_level": 0.9,
+        "method": "conformal",
+        "tier": "lidar"
+      },
+      "floor_area": {
+        "value": 107.3226,
+        "lo": 106.464,
+        "hi": 108.1812,
+        "confidence_level": 0.9,
+        "method": "conformal",
+        "tier": "lidar"
+      },
+      "walls": [
+        {
+          "wall_id": "room_00_w1",
+          "start": [
+            -2.872,
+            -1.486
+          ],
+          "end": [
+            6.457,
+            -1.486
+          ],
+          "length": {
+            "value": 9.329,
+            "lo": 9.2544,
+            "hi": 9.4037,
+            "confidence_level": 0.9,
+            "method": "conformal",
+            "tier": "lidar"
+          },
+          "confidence": 1.0
+        },
+        {
+          "wall_id": "room_00_w2",
+          "start": [
+            6.457,
+            -1.486
+          ],
+          "end": [
+            6.457,
+            10.018
+          ],
+          "length": {
+            "value": 11.5042,
+            "lo": 11.4121,
+            "hi": 11.5962,
+            "confidence_level": 0.9,
+            "method": "conformal",
+            "tier": "lidar"
+          },
+          "confidence": 1.0
+        },
+        {
+          "wall_id": "room_00_w3",
+          "start": [
+            6.457,
+            10.018
+          ],
+          "end": [
+            -2.872,
+            10.018
+          ],
+          "length": {
+            "value": 9.329,
+            "lo": 9.2544,
+            "hi": 9.4037,
+            "confidence_level": 0.9,
+            "method": "conformal",
+            "tier": "lidar"
+          },
+          "confidence": 1.0
+        },
+        {
+          "wall_id": "room_00_w4",
+          "start": [
+            -2.872,
+            10.018
+          ],
+          "end": [
+            -2.872,
+            -1.486
+          ],
+          "length": {
+            "value": 11.5042,
+            "lo": 11.4121,
+            "hi": 11.5962,
+            "confidence_level": 0.9,
+            "method": "conformal",
+            "tier": "lidar"
+          },
+          "confidence": 1.0
+        }
+      ],
+      "floor_polygon": [
+        [
+          -2.872,
+          -1.486
+        ],
+        [
+          6.457,
+          -1.486
+        ],
+        [
+          6.457,
+          10.018
+        ],
+        [
+          -2.872,
+          10.018
+        ]
+      ],
+      "openings": [
+        {
+          "opening_id": "window_room_00_w2_01",
+          "wall_id": "room_00_w2",
+          "type": "window",
+          "width": {
+            "value": 1.86,
+            "lo": 1.8451,
+            "hi": 1.8749,
+            "confidence_level": 0.9,
+            "method": "conformal",
+            "tier": "lidar"
+          },
+          "height": {
+            "value": 1.1,
+            "lo": 1.0912,
+            "hi": 1.1088,
+            "confidence_level": 0.9,
+            "method": "conformal",
+            "tier": "lidar"
+          },
+          "sill_height": {
+            "value": 0.9,
+            "lo": 0.8928,
+            "hi": 0.9072,
+            "confidence_level": 0.9,
+            "method": "conformal",
+            "tier": "lidar"
+          },
+          "position": [
+            6.457,
+            6.524,
+            1.45
+          ],
+          "confidence": 0.93
+        },
+        {
+          "opening_id": "passageway_room_00_w4_01",
+          "wall_id": "room_00_w4",
+          "type": "passageway",
+          "width": {
+            "value": 0.66,
+            "lo": 0.6547,
+            "hi": 0.6653,
+            "confidence_level": 0.9,
+            "method": "conformal",
+            "tier": "lidar"
+          },
+          "height": {
+            "value": 2.4,
+            "lo": 2.3808,
+            "hi": 2.4192,
+            "confidence_level": 0.9,
+            "method": "conformal",
+            "tier": "lidar"
+          },
+          "sill_height": {
+            "value": 0.0,
+            "lo": 0.0,
+            "hi": 0.005,
+            "confidence_level": 0.9,
+            "method": "conformal",
+            "tier": "lidar"
+          },
+          "position": [
+            -2.872,
+            6.348,
+            1.2
+          ],
+          "confidence": 0.91
+        }
+      ],
+      "is_rectilinear": true,
+      "provenance": "bbox",
+      "transform_to_plan": null
+    }
+  },
+  "openings": {
+    "room_00": [
+      {
+        "opening_id": "window_room_00_w2_01",
+        "wall_id": "room_00_w2",
+        "type": "window",
+        "width": {
+          "value": 1.86,
+          "lo": 1.8451,
+          "hi": 1.8749,
+          "confidence_level": 0.9,
+          "method": "conformal",
+          "tier": "lidar"
+        },
+        "height": {
+          "value": 1.1,
+          "lo": 1.0912,
+          "hi": 1.1088,
+          "confidence_level": 0.9,
+          "method": "conformal",
+          "tier": "lidar"
+        },
+        "sill_height": {
+          "value": 0.9,
+          "lo": 0.8928,
+          "hi": 0.9072,
+          "confidence_level": 0.9,
+          "method": "conformal",
+          "tier": "lidar"
+        },
+        "position": [
+          6.457,
+          6.524,
+          1.45
+        ],
+        "confidence": 0.93
+      },
+      {
+        "opening_id": "passageway_room_00_w4_01",
+        "wall_id": "room_00_w4",
+        "type": "passageway",
+        "width": {
+          "value": 0.66,
+          "lo": 0.6547,
+          "hi": 0.6653,
+          "confidence_level": 0.9,
+          "method": "conformal",
+          "tier": "lidar"
+        },
+        "height": {
+          "value": 2.4,
+          "lo": 2.3808,
+          "hi": 2.4192,
+          "confidence_level": 0.9,
+          "method": "conformal",
+          "tier": "lidar"
+        },
+        "sill_height": {
+          "value": 0.0,
+          "lo": 0.0,
+          "hi": 0.005,
+          "confidence_level": 0.9,
+          "method": "conformal",
+          "tier": "lidar"
+        },
+        "position": [
+          -2.872,
+          6.348,
+          1.2
+        ],
+        "confidence": 0.91
+      }
+    ]
+  },
+  "doorway_transitions": [],
+  "stitched_plan": {
+    "rooms": [
+      "room_00"
+    ],
+    "connections": [],
+    "total_footprint_area": {
+      "value": 107.3226,
+      "lo": 106.464,
+      "hi": 108.1812,
+      "confidence_level": 0.9,
+      "method": "conformal",
+      "tier": "lidar"
+    },
+    "footprint_polygon": [
+      [
+        -2.872,
+        -1.486
+      ],
+      [
+        6.457,
+        -1.486
+      ],
+      [
+        6.457,
+        10.018
+      ],
+      [
+        -2.872,
+        10.018
+      ]
+    ],
+    "drift_correction_applied": true
+  },
+  "intervals": {
+    "room_00_ceiling": {
+      "value": 2.4,
+      "lo": 2.3808,
+      "hi": 2.4192,
+      "confidence_level": 0.9,
+      "method": "conformal",
+      "tier": "lidar"
+    },
+    "room_00_floor_area": {
+      "value": 107.3226,
+      "lo": 106.464,
+      "hi": 108.1812,
+      "confidence_level": 0.9,
+      "method": "conformal",
+      "tier": "lidar"
+    },
+    "room_00_room_00_w1_len": {
+      "value": 9.329,
+      "lo": 9.2544,
+      "hi": 9.4037,
+      "confidence_level": 0.9,
+      "method": "conformal",
+      "tier": "lidar"
+    },
+    "room_00_room_00_w2_len": {
+      "value": 11.5042,
+      "lo": 11.4121,
+      "hi": 11.5962,
+      "confidence_level": 0.9,
+      "method": "conformal",
+      "tier": "lidar"
+    },
+    "room_00_room_00_w3_len": {
+      "value": 9.329,
+      "lo": 9.2544,
+      "hi": 9.4037,
+      "confidence_level": 0.9,
+      "method": "conformal",
+      "tier": "lidar"
+    },
+    "room_00_room_00_w4_len": {
+      "value": 11.5042,
+      "lo": 11.4121,
+      "hi": 11.5962,
+      "confidence_level": 0.9,
+      "method": "conformal",
+      "tier": "lidar"
+    },
+    "room_00_window_room_00_w2_01_w": {
+      "value": 1.86,
+      "lo": 1.8451,
+      "hi": 1.8749,
+      "confidence_level": 0.9,
+      "method": "conformal",
+      "tier": "lidar"
+    },
+    "room_00_passageway_room_00_w4_01_w": {
+      "value": 0.66,
+      "lo": 0.6547,
+      "hi": 0.6653,
+      "confidence_level": 0.9,
+      "method": "conformal",
+      "tier": "lidar"
+    }
+  },
+  "damage": [],
+  "concealed_flags": [],
+  "scope_items": [],
+  "qa_report": {
+    "passed": true,
+    "checks_run": [
+      "check_interval_bounds",
+      "check_polygon_closure",
+      "check_ceiling_height_range",
+      "check_surface_reference_integrity"
+    ],
+    "failed_checks": [],
+    "adjustments_made": [],
+    "overall_confidence": 0.95
+  },
+  "timings": {
+    "ingest": 7.0327,
+    "geometry": 0.5409,
+    "openings": 0.0876,
+    "stitch": 0.0,
+    "calibrate": 0.0,
+    "damage": 0.2479,
+    "concealed": 0.0146,
+    "export": 0.0063,
+    "scope": 0.0052,
+    "qa_critic": 0.0
+  },
+  "warnings": [
+    "Damage inspection skipped: LLM unavailable (disabled: LLM globally disabled (--no-llm))"
+  ],
+  "output_dir": "fixloop\\before\\with_ceiling"
+}
