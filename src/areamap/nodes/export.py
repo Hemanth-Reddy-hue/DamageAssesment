@@ -10,7 +10,25 @@ from areamap.render.plan_svg import render_plan_svg
 def export_node(state: CaptureState, output_dir: Path | str | None = None) -> dict[str, Any]:
     """Export finalized results to plan.json, plan.svg, and run_log.json."""
     t0 = time.time()
-    target_dir = output_dir or getattr(state, "output_dir", "out") or "out"
+    target_dir = output_dir or getattr(state, "output_dir", None)
+    if not target_dir or target_dir == "out" or Path(target_dir) == Path("out"):
+        capture_path = getattr(state, "capture_path", None)
+        if capture_path:
+            clean_path = str(capture_path).strip().strip("\"'").rstrip("/\\")
+            p = Path(clean_path)
+            if p.is_file() or (p.suffix and not p.is_dir()):
+                parent_name = p.parent.name
+                if parent_name and parent_name.lower() not in ["", ".", "data", "raw"]:
+                    folder_name = parent_name
+                else:
+                    folder_name = p.stem or "capture"
+            else:
+                folder_name = p.name or "capture"
+            target_dir = Path("out") / folder_name
+        else:
+            target_dir = Path("out")
+
+    state.output_dir = str(target_dir)
     out = Path(target_dir)
     out.mkdir(parents=True, exist_ok=True)
 

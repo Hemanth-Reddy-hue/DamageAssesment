@@ -43,10 +43,24 @@ import numpy as np
 
 log = logging.getLogger(__name__)
 
+
+def _is_offline() -> bool:
+    """Check the offline flag from settings (loaded from .env).
+    
+    Uses the config system so .env is always respected.
+    Falls back to the OFFLINE env var if settings can't be imported.
+    """
+    try:
+        from areamap.config import settings
+        return settings.offline
+    except Exception:
+        # Fallback: check env var. Default to FALSE so models load if not explicitly blocked.
+        return os.environ.get("OFFLINE", "0").lower() in ("1", "true", "yes")
+
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
-_DEPTH_ANYTHING_V2_HF_ID = "depth-anything/Depth-Anything-V2-Small-hf"
+_DEPTH_ANYTHING_V2_HF_ID = "depth-anything/Depth-Anything-V2-Metric-Indoor-Small-hf"
 _MIDAS_ONNX_URL = (
     "https://github.com/isl-org/MiDaS/releases/download/v3_1/"
     "dpt_swin2_tiny_256.onnx"
@@ -57,9 +71,10 @@ _MIDAS_ONNX_FILENAME = "dpt_swin2_tiny_256.onnx"
 _DEPTH_PERCENTILE_LO = 2
 _DEPTH_PERCENTILE_HI = 98
 
-# Metric range for clipping
-METRIC_MIN_M = 0.15
-METRIC_MAX_M = 10.0
+# Metric range for clipping (realistic indoor residential bounds)
+METRIC_MIN_M = 0.20
+METRIC_MAX_M = 10.00
+METRIC_INDOOR_MAX_M = 10.00
 
 
 # ---------------------------------------------------------------------------
@@ -67,47 +82,83 @@ METRIC_MAX_M = 10.0
 # ---------------------------------------------------------------------------
 
 def _try_load_depth_anything_v2(device: str = "cpu"):
-    """Attempt to load Depth Anything V2 from HuggingFace.
+    """Attempt to load Depth-Anything-V2-Metric-Indoor from HuggingFace cache.
 
-    Returns (pipeline_fn, 'depth_anything') or (None, None) on failure.
+    This is a METRIC model: its output is already in meters, no rescaling needed.
+    It loads from local cache if available (no internet required once downloaded).
+
+    Returns (pipeline_fn, 'depth_anything_v2') or (None, None) on failure.
     """
     try:
         import torch
         from transformers import pipeline as hf_pipeline
 
-        offline = os.environ.get("OFFLINE", "1").lower() in ("1", "true", "yes")
-        if offline:
-            log.debug("OFFLINE=1 – skipping Depth Anything V2 download")
-            return None, None
+        # Use settings.offline (reads from .env) — NOT a hardcoded default.
+        # This ensures the model is used when it is cached locally,
+        # even when OFFLINE=1 was intended only to block LLM/API calls.
+        offline = _is_offline()
+        log.debug("[DepthEngine] offline=%s, attempting to load: %s", offline, _DEPTH_ANYTHING_V2_HF_ID)
 
+        # If offline, use local_files_only to load from cache without network.
+        # If not offline, allow download on first use.
         pipe = hf_pipeline(
             task="depth-estimation",
             model=_DEPTH_ANYTHING_V2_HF_ID,
             device=device,
+            local_files_only=offline,  # Use cache only when offline
         )
-        log.info("Depth Anything V2 loaded successfully on %s", device)
+        log.info("[DepthEngine] Depth-Anything-V2-Metric-Indoor loaded on %s (offline=%s)", device, offline)
         return pipe, "depth_anything_v2"
     except Exception as exc:
-        log.debug("Could not load Depth Anything V2: %s", exc)
+        log.warning("[DepthEngine] Could not load Depth-Anything-V2-Metric-Indoor: %s", exc)
         return None, None
 
 
 def _predict_depth_anything(pipe, image_bgr: np.ndarray) -> Optional[np.ndarray]:
-    """Run Depth Anything V2 and return a (H, W) float32 relative depth map."""
+    """Run Depth-Anything-V2-Metric-Indoor and return a (H, W) float32 METRIC depth map.
+
+    The Metric Indoor variant outputs depth directly in meters — no affine rescaling needed.
+    The 'predicted_depth' key contains the raw metric tensor.
+    """
     try:
         from PIL import Image as PILImage
         pil_img = PILImage.fromarray(cv2.cvtColor(image_bgr, cv2.COLOR_BGR2RGB))
         result = pipe(pil_img)
-        depth = np.array(result["depth"], dtype=np.float32)
-        # Resize to original resolution
+
+        # 'predicted_depth' is the raw model output tensor (metric metres for Metric-Indoor)
+        if "predicted_depth" in result:
+            depth_tensor = result["predicted_depth"]
+            if hasattr(depth_tensor, "cpu"):
+                depth_tensor = depth_tensor.cpu().numpy()
+            elif hasattr(depth_tensor, "numpy"):
+                depth_tensor = depth_tensor.numpy()
+            else:
+                depth_tensor = np.array(depth_tensor)
+            depth = np.squeeze(depth_tensor).astype(np.float32)
+        else:
+            # Fallback: convert PIL image to float array
+            depth = np.array(result["depth"], dtype=np.float32)
+
+        # Resize to original image resolution if needed
         if depth.shape[:2] != image_bgr.shape[:2]:
             depth = cv2.resize(
                 depth, (image_bgr.shape[1], image_bgr.shape[0]),
                 interpolation=cv2.INTER_LINEAR,
             )
+
+        # Sanity check: metric indoor depth should be in [0.1, 20] metres
+        valid_ratio = float(np.mean((depth > 0.1) & (depth < 20.0)))
+        if valid_ratio < 0.1:
+            log.warning("[DepthEngine] Suspiciously few valid depth pixels (%.1f%%). "
+                        "Model output range: [%.3f, %.3f]. Skipping frame.",
+                        valid_ratio * 100, float(depth.min()), float(depth.max()))
+            return None
+
+        log.debug("[DepthEngine] Depth: min=%.3f median=%.3f max=%.3f m (valid=%.1f%%)",
+                  float(depth.min()), float(np.median(depth)), float(depth.max()), valid_ratio * 100)
         return depth
     except Exception as exc:
-        log.debug("Depth Anything V2 inference failed: %s", exc)
+        log.warning("[DepthEngine] Depth-Anything inference failed: %s", exc)
         return None
 
 
@@ -193,6 +244,7 @@ def _geometric_depth(
     camera_height: float,
     seam_v: float,
     ceiling_height: float,
+    pitch_rad: float = 0.0,
 ) -> np.ndarray:
     """Generate a per-pixel metric depth estimate using pure ray geometry.
 
@@ -201,7 +253,7 @@ def _geometric_depth(
       - Floor plane: z = 0.
       - Ceiling plane: z = ceiling_height.
       - For each pixel (u, v):
-          * elevation angle φ = atan2((v - cy), fy)  (positive = below horizon)
+          * elevation angle φ = atan2((v - cy), fy) + pitch_rad
           * if φ > φ_seam  → pixel is on the floor / below seam
               depth = h_cam / tan(φ)   (intersection with z=0 plane)
           * if φ < φ_ceiling  → pixel is near ceiling
@@ -217,46 +269,42 @@ def _geometric_depth(
     cx = intrinsics["cx"]
     cy = intrinsics["cy"]
 
-    # Elevation angle at the seam and at the top of the image
-    phi_seam = np.arctan2(seam_v - cy, fy)         # positive (below horizon)
-    phi_top = np.arctan2(0.0 - cy, fy)             # negative (above horizon)
+    # Elevation angle at the seam and at the top of the image (including pitch)
+    phi_seam = float(np.arctan2(seam_v - cy, fy) + pitch_rad)
+    phi_top = float(np.arctan2(0.0 - cy, fy) + pitch_rad)
 
     # Build pixel coordinate grids
     u_grid = np.arange(W, dtype=np.float32)
     v_grid = np.arange(H, dtype=np.float32)
     UU, VV = np.meshgrid(u_grid, v_grid)
 
-    phi = np.arctan2(VV - cy, fy)  # (H, W) elevation per pixel
+    phi = np.arctan2(VV - cy, fy) + pitch_rad  # (H, W) elevation per pixel
 
     # Region masks
     floor_mask = phi >= phi_seam                        # below seam → floor
-    ceiling_mask = phi <= phi_top * 0.3                 # near top → ceiling
+    ceiling_mask = phi <= min(phi_top * 0.3, -0.10)     # near top → ceiling
     wall_mask = ~floor_mask & ~ceiling_mask
 
     depth_m = np.zeros((H, W), dtype=np.float32)
 
-    # Floor region
+    # Clamp minimum elevation to 0.05 rad (~2.9 deg) to prevent runaway depths near horizon
     tan_phi_floor = np.tan(np.clip(phi[floor_mask], 0.05, np.pi / 2 - 0.01))
-    depth_m[floor_mask] = np.clip(camera_height / tan_phi_floor, METRIC_MIN_M, METRIC_MAX_M)
+    depth_m[floor_mask] = np.clip(camera_height / tan_phi_floor, METRIC_MIN_M, METRIC_INDOOR_MAX_M)
 
     # Ceiling region
-    tan_phi_ceil = np.tan(np.clip(-phi[ceiling_mask], 0.05, np.pi / 2 - 0.01))
+    tan_phi_ceil = np.tan(np.clip(-phi[ceiling_mask], 0.15, np.pi / 2 - 0.01))
     depth_m[ceiling_mask] = np.clip(
         (ceiling_height - camera_height) / (tan_phi_ceil + 1e-6),
-        METRIC_MIN_M, METRIC_MAX_M,
+        METRIC_MIN_M, METRIC_INDOOR_MAX_M,
     )
 
     # Wall region: linear interpolation between typical floor depth at seam
     # and a reasonable far-wall distance
     if np.any(wall_mask):
-        # Floor depth at the seam pixel
-        phi_s_clamp = max(phi_seam, 0.05)
-        d_seam = float(np.clip(camera_height / np.tan(phi_s_clamp), 0.5, 8.0))
+        phi_s_clamp = max(phi_seam, 0.22)
+        d_seam = float(np.clip(camera_height / np.tan(phi_s_clamp), 0.8, METRIC_INDOOR_MAX_M))
+        d_wall_far = float(np.clip(d_seam * 1.15, 1.0, METRIC_INDOOR_MAX_M))
 
-        # Assume far wall is at roughly 1.5 × the seam-depth (depth ambiguity)
-        d_wall_far = d_seam * 0.85
-
-        # Interpolate by vertical position within the wall region
         v_in_wall = VV[wall_mask]
         v_wall_min = float(np.where(ceiling_mask)[0].max()) if np.any(ceiling_mask) else 0.0
         v_wall_max = float(np.where(floor_mask)[0].min()) if np.any(floor_mask) else float(H)
@@ -537,6 +585,7 @@ class DepthEngine:
         camera_height: float,
         seam_v: float,
         ceiling_height: float = 2.50,
+        pitch_rad: float = 0.0,
     ) -> np.ndarray:
         """Predict a metric depth map for a single RGB image.
 
@@ -546,6 +595,7 @@ class DepthEngine:
             camera_height : metres (from scene_geometry.estimate_camera_height).
             seam_v        : y-pixel of floor-wall seam.
             ceiling_height: architectural prior in metres.
+            pitch_rad     : camera optical pitch angle in radians.
 
         Returns:
             depth_m: (H, W) float32, metric metres.
@@ -568,8 +618,35 @@ class DepthEngine:
 
         # Geometric fallback (always runs if ML backends fail)
         return _geometric_depth(
-            image_bgr, intrinsics, camera_height, seam_v, ceiling_height,
+            image_bgr, intrinsics, camera_height, seam_v, ceiling_height, pitch_rad=pitch_rad,
         )
+
+    def predict_raw(self, image_bgr: np.ndarray) -> Optional[np.ndarray]:
+        """Return raw METRIC depth map in metres.
+
+        For depth_anything_v2 (Metric-Indoor): returns metric depth directly.
+        For midas: converts disparity to pseudo-metric (relative, not absolute metres).
+        For geometric: returns None (no pixel-level depth available).
+
+        Returns:
+            (H, W) float32 array in metres, or None if unavailable.
+        """
+        if self.backend == "depth_anything_v2":
+            # Metric-Indoor model: output is already in metres
+            return _predict_depth_anything(self._da_pipe, image_bgr)
+
+        if self.backend == "midas":
+            # MiDaS is relative disparity — convert to pseudo-depth for ratio estimation
+            rel = _predict_midas(self._midas_net, self._midas_size, image_bgr)
+            if rel is not None:
+                d_inv = rel.copy()
+                d_min, d_max = d_inv.min(), d_inv.max()
+                if d_max - d_min > 1e-6:
+                    d_inv = (d_inv - d_min) / (d_max - d_min)
+                return 1.0 / (d_inv + 0.01)  # pseudo-metric: only ratios are meaningful
+
+        # geometric backend: no per-pixel depth available for scale estimation
+        return None
 
     def predict_and_unproject(
         self,
@@ -578,6 +655,7 @@ class DepthEngine:
         camera_height: float,
         seam_v: float,
         ceiling_height: float = 2.50,
+        pitch_rad: float = 0.0,
         pixel_step: int = 4,
     ) -> Tuple[np.ndarray, np.ndarray]:
         """Predict depth and immediately unproject to 3D room-frame point cloud.
@@ -587,7 +665,7 @@ class DepthEngine:
             pts_world : (N, 3) float32 point cloud in room frame (Z-up)
         """
         depth_m = self.predict(
-            image_bgr, intrinsics, camera_height, seam_v, ceiling_height,
+            image_bgr, intrinsics, camera_height, seam_v, ceiling_height, pitch_rad=pitch_rad,
         )
         pts_world = depth_to_pointcloud(
             depth_m, intrinsics, camera_height, step=pixel_step,

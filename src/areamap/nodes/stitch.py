@@ -50,13 +50,28 @@ def stitch_node(state: CaptureState) -> dict[str, Any]:
     # Keep track of edges to avoid duplicates
     added_edges = set()
     
+    shared_frame = state.device_meta.get("shared_frame", False)
+    
     # Process doorway transitions from Room Discovery
     for transition in state.doorway_transitions:
-        r_a = transition["room_a"]
-        r_b = transition["room_b"]
+        r_a = transition.get("room_a") or transition.get("from_room")
+        r_b = transition.get("room_b") or transition.get("to_room")
+        if not r_a or not r_b:
+            continue
         
         edge_key = tuple(sorted([r_a, r_b]))
         if edge_key in added_edges:
+            continue
+            
+        if shared_frame:
+            # SfM provides global consistency, no ICP needed
+            rel_T = make_se2_matrix(0.0, 0.0, 0.0)
+            relative_poses.append({
+                "from_room": r_a,
+                "to_room": r_b,
+                "transform": rel_T
+            })
+            added_edges.add(edge_key)
             continue
             
         pc_a_path = state.point_clouds.get(r_a)
@@ -115,15 +130,16 @@ def stitch_node(state: CaptureState) -> dict[str, Any]:
         curr_geom = apply_se2_transform_to_room(rooms[r_id], T)
 
         # Ensure no overlap with already placed rooms (Issue #8 constraint solver)
-        from areamap.geometry.solver import resolve_room_collision
-        for p_id in placed_ids:
-            dx, dy = resolve_room_collision(
-                aligned_rooms[p_id].floor_polygon,
-                curr_geom.floor_polygon
-            )
-            if abs(dx) > 1e-3 or abs(dy) > 1e-3:
-                shift_T = make_se2_matrix(dx, dy, 0.0)
-                curr_geom = apply_se2_transform_to_room(curr_geom, shift_T)
+        if not shared_frame:
+            from areamap.geometry.solver import resolve_room_collision
+            for p_id in placed_ids:
+                dx, dy = resolve_room_collision(
+                    aligned_rooms[p_id].floor_polygon,
+                    curr_geom.floor_polygon
+                )
+                if abs(dx) > 1e-3 or abs(dy) > 1e-3:
+                    shift_T = make_se2_matrix(dx, dy, 0.0)
+                    curr_geom = apply_se2_transform_to_room(curr_geom, shift_T)
 
         aligned_rooms[r_id] = curr_geom
         placed_ids.append(r_id)

@@ -42,6 +42,7 @@ class RoomGeometry(BaseModel):
     floor_polygon: list[list[float]] = Field(default_factory=list, description="Ordered boundary vertices [[x, y], ...]")
     openings: list[Opening] = Field(default_factory=list)
     is_rectilinear: bool = Field(default=True, description="Whether Manhattan assumption holds")
+    provenance: Literal["measured", "fallback", "bbox", "prior", "not_observed", "synthetic"] = Field(default="measured", description="Data provenance tracking")
     transform_to_plan: list[list[float]] | None = Field(default=None, description="4x4 transform to global plan coordinates")
 
 class DamageRegion(BaseModel):
@@ -100,10 +101,11 @@ class QAReport(BaseModel):
 class CaptureState(BaseModel):
     """Complete shared state across all nodes in AreaMap LangGraph."""
     capture_path: str = Field(..., description="Path to capture data")
-    tier: Literal["photo", "video", "lidar"] = "lidar"
+    tier: Literal["photo", "video", "lidar"] | None = None
     device_meta: dict[str, Any] = Field(default_factory=dict)
     rooms: list[str] = Field(default_factory=list)
     point_clouds: dict[str, str] = Field(default_factory=dict, description="room_id -> point cloud artifact path")
+    camera_positions: dict[str, str] = Field(default_factory=dict, description="room_id -> camera positions artifact path")
     room_geometry: dict[str, RoomGeometry] = Field(default_factory=dict)
     openings: dict[str, list[Opening]] = Field(default_factory=dict)
     doorway_transitions: list[dict[str, Any]] = Field(default_factory=list, description="Transition edges between rooms")

@@ -35,8 +35,8 @@ CAM_HEIGHT_MIN = 0.90
 CAM_HEIGHT_MAX = 2.10
 CAM_HEIGHT_DEFAULT = 1.45
 
-# Fraction of image height from the top that we trust as non-floor
-FLOOR_SEARCH_TOP_FRACTION = 0.35
+# Fraction of image height from the top that we trust as non-floor (floor must be in lower half)
+FLOOR_SEARCH_TOP_FRACTION = 0.50
 
 # Minimum confidence threshold to accept a seam detection
 SEAM_MIN_CONFIDENCE = 0.20
@@ -141,8 +141,8 @@ def detect_floor_wall_seam(
 
     seam_v = float(np.dot(y_vals, weights) / total_w)
 
-    # Sanity-clamp: seam must be between 45% and 90% of image height
-    seam_v = float(np.clip(seam_v, 0.45 * h, 0.90 * h))
+    # Sanity-clamp: seam must be in the lower region of the image
+    seam_v = float(np.clip(seam_v, 0.52 * h, 0.92 * h))
 
     # Confidence proportional to number and agreement of votes
     if len(votes) >= 2:

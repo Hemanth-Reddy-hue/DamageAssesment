@@ -247,22 +247,27 @@ def recover_scale_from_architecture(
 # ---------------------------------------------------------------------------
 
 def _nearest_neighbour_dists(src: np.ndarray, dst: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
-    """Brute-force nearest-neighbour search using squared L2.
-    Returns (distances, indices_into_dst).
+    """Nearest-neighbour search using cKDTree with fallback.
+    Returns (distances_squared, indices_into_dst).
     """
-    # Use a simple chunked search to avoid OOM for large clouds
-    best_dist = np.full(len(src), np.inf)
-    best_idx = np.zeros(len(src), dtype=np.int64)
-    chunk = 256
-    for i in range(0, len(src), chunk):
-        s_chunk = src[i:i + chunk]
-        diff = dst[np.newaxis, :, :] - s_chunk[:, np.newaxis, :]  # (C, N, 3)
-        d2 = np.sum(diff ** 2, axis=2)  # (C, N)
-        idx = np.argmin(d2, axis=1)
-        dist = d2[np.arange(len(s_chunk)), idx]
-        best_dist[i:i + chunk] = dist
-        best_idx[i:i + chunk] = idx
-    return best_dist, best_idx
+    try:
+        from scipy.spatial import cKDTree
+        tree = cKDTree(dst)
+        dists, idx = tree.query(src)
+        return dists ** 2, idx
+    except Exception:
+        best_dist = np.full(len(src), np.inf)
+        best_idx = np.zeros(len(src), dtype=np.int64)
+        chunk = 256
+        for i in range(0, len(src), chunk):
+            s_chunk = src[i:i + chunk]
+            diff = dst[np.newaxis, :, :] - s_chunk[:, np.newaxis, :]  # (C, N, 3)
+            d2 = np.sum(diff ** 2, axis=2)  # (C, N)
+            idx = np.argmin(d2, axis=1)
+            dist = d2[np.arange(len(s_chunk)), idx]
+            best_dist[i:i + chunk] = dist
+            best_idx[i:i + chunk] = idx
+        return best_dist, best_idx
 
 
 def icp_align(
@@ -289,19 +294,38 @@ def icp_align(
 
     rng = np.random.default_rng(42)
 
+    # Subsample target reference if huge to keep tree construction and search instantaneous
+    if len(target) > 5000:
+        t_sub_idx = rng.choice(len(target), 5000, replace=False)
+        target_ref = target[t_sub_idx]
+    else:
+        target_ref = target
+
+    tree = None
+    try:
+        from scipy.spatial import cKDTree
+        tree = cKDTree(target_ref)
+    except Exception:
+        pass
+
     prev_rmse = np.inf
     for _ in range(max_iterations):
         # Subsample for speed
         idx = rng.choice(len(src), min(subsample, len(src)), replace=False)
         src_sub = src[idx]
 
-        dists, nn_idx = _nearest_neighbour_dists(src_sub, target)
+        if tree is not None:
+            dists_raw, nn_idx = tree.query(src_sub)
+            dists = dists_raw ** 2
+        else:
+            dists, nn_idx = _nearest_neighbour_dists(src_sub, target_ref)
+
         valid = dists < max_correspondence_dist ** 2
         if valid.sum() < 6:
             break
 
         s_pts = src_sub[valid]
-        t_pts = target[nn_idx[valid]]
+        t_pts = target_ref[nn_idx[valid]]
 
         # Solve for R, t via SVD (Procrustes)
         mu_s = s_pts.mean(axis=0)

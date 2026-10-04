@@ -14,6 +14,11 @@ def openings_node(state: CaptureState) -> dict[str, Any]:
     updated_geom = dict(state.room_geometry)
 
     for room_id, geom in updated_geom.items():
+        if geom.provenance == "fallback":
+            all_openings[room_id] = []
+            geom.openings = []
+            continue
+
         pts = None
         if room_id in state.point_clouds:
             cloud_file = Path(state.point_clouds[room_id])

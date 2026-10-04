@@ -297,6 +297,7 @@ def ingest_photo_capture(
                     camera_height=cam_height,
                     seam_v=seam_v if seam_v is not None else (geo.get("seam_v") or (intrinsics["cy"] + 0.22 * intrinsics["height"])),
                     ceiling_height=ceiling_height_prior,
+                    pitch_rad=pitch_rad,
                     pixel_step=4,
                 )
                 if len(pts_depth) >= 50:

@@ -12,7 +12,9 @@ Given an inspection image of an architectural surface and geometric context (sur
 2. If damage is present:
    - Identify the damage class.
    - Assign severity: `minor`, `moderate`, or `severe`.
-   - Provide an estimated 2D bounding box `[ymin, xmin, ymax, xmax]` normalized to [0, 1].
+   - Provide the affected surface (ceiling, wall, or floor).
+   - Provide an estimated 2D bounding box `[ymin, xmin, ymax, xmax]` normalized to [0, 1] relative to the image (never pixels, never the whole image unless the damage truly fills it).
+   - Give estimated_extent_m2 only if you can justify it; otherwise omit it.
    - Describe observable characteristics.
 3. If no damage is present:
    - Return an empty damage list.
